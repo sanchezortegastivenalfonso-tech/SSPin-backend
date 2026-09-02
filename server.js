@@ -9,14 +9,15 @@ app.use(cors());
 app.use(express.json());
 
 app.post('/api/descargar', async (req, res) => {
-    const { url, plataforma } = req.body;
+    const { url } = req.body;
 
     if (!url) {
-        return res.status(400).json({ exito: false, mensaje: 'URL no proporcionada' });
+        return res.status(400).json({ exito: false, mensaje: 'Por favor ingresa un enlace.' });
     }
 
     try {
-        if (plataforma === 'tiktok' || url.includes('tiktok.com')) {
+        // --- LÓGICA TIKTOK ---
+        if (url.includes('tiktok.com')) {
             const response = await axios.post('https://www.tikwm.com/api/', new URLSearchParams({
                 url: url,
                 hd: '1'
@@ -39,12 +40,17 @@ app.post('/api/descargar', async (req, res) => {
                     titulo: data.data.title || 'Video de TikTok'
                 });
             } else {
-                return res.json({ exito: false, mensaje: 'No se pudo procesar el enlace de TikTok.' });
+                return res.json({ exito: false, mensaje: 'No se pudo obtener el video de TikTok.' });
             }
-        } 
-        
-        if (plataforma === 'pinterest' || url.includes('pin.it') || url.includes('pinterest.com')) {
-            const response = await axios.get(url);
+        }
+
+        // --- LÓGICA PINTEREST ---
+        if (url.includes('pin.it') || url.includes('pinterest.com')) {
+            const response = await axios.get(url, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            });
             const html = response.data;
             const match = html.match(/https:\/\/v1\.pinimg\.com\/videos\/mc\/[^\s"]+\.mp4/);
 
@@ -55,19 +61,19 @@ app.post('/api/descargar', async (req, res) => {
                     videoUrlHD: match[0]
                 });
             } else {
-                return res.json({ exito: false, mensaje: 'No se encontró video en esta publicación de Pinterest.' });
+                return res.json({ exito: false, mensaje: 'No se encontró un video en esta publicación.' });
             }
         }
 
-        return res.json({ exito: false, mensaje: 'Plataforma no soportada.' });
+        return res.json({ exito: false, mensaje: 'Enlace no soportado.' });
 
     } catch (error) {
         console.error('Error en el servidor:', error.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el enlace.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error interno en el servidor.' });
     }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor ejecutándose en el puerto ${PORT}`);
+    console.log(`Servidor corriendo en el puerto ${PORT}`);
 });
