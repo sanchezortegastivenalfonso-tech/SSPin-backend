@@ -5,7 +5,6 @@ const cors = require('cors');
 
 const app = express();
 
-// Habilitar CORS con exposición de cabeceras para descargas fluidas
 app.use(cors({
     origin: '*',
     exposedHeaders: ['Content-Disposition']
@@ -13,7 +12,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// Endpoint proxy para servir o forzar la descarga de videos evitando restricciones CORS/Referer
+// Endpoint proxy para transmitir el flujo binario de los videos
 app.get('/api/proxy-download', async (req, res) => {
     const videoUrl = req.query.url;
 
@@ -34,22 +33,30 @@ app.get('/api/proxy-download', async (req, res) => {
             url: videoUrl,
             responseType: 'stream',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
-                'Referer': refererHeader
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': refererHeader,
+                'Accept': '*/*'
             }
         });
 
-        res.setHeader('Content-Type', 'video/mp4');
+        if (response.status >= 400) {
+            return res.status(response.status).send('No se pudo acceder al archivo multimedia original.');
+        }
+
+        res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp4');
+        if (response.headers['content-length']) {
+            res.setHeader('Content-Length', response.headers['content-length']);
+        }
         res.setHeader('Content-Disposition', 'attachment; filename="video.mp4"');
 
         response.data.pipe(res);
     } catch (error) {
         console.error('Error en proxy-download:', error.message);
-        res.status(500).send('No se pudo procesar la descarga del archivo.');
+        res.status(500).send('Error al procesar la descarga del archivo.');
     }
 });
 
-// Endpoint de procesamiento de enlaces
+// Endpoint principal de la API
 app.post('/api/descargar', async (req, res) => {
     const { url, plataforma } = req.body;
 
@@ -58,8 +65,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 
     try {
-        // Aquí conectas con tu extractor/API específica según la plataforma
-        // Ejemplo de respuesta estructurada:
+        // Integración de la extracción según la plataforma
         return res.json({
             exito: true,
             videoUrlHD: 'https://ejemplo.com/video_hd.mp4',
