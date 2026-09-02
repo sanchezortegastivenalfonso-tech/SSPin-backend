@@ -12,7 +12,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// Proxy de descarga que pasa el stream directamente al cliente
+// Proxy seguro para canalizar el video real de TikTok/Pinterest
 app.get('/api/proxy-download', async (req, res) => {
     const videoUrl = req.query.url;
 
@@ -33,11 +33,19 @@ app.get('/api/proxy-download', async (req, res) => {
             maxRedirects: 10,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Referer': refererHeader
+                'Accept': 'video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5',
+                'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+                'Referer': refererHeader,
+                'Range': 'bytes=0-'
             }
         });
+
+        // Validar si la respuesta devuelta es un archivo multimedia
+        const contentType = response.headers['content-type'] || '';
+        
+        if (contentType.includes('text/html') || contentType.includes('application/json')) {
+            return res.status(403).send('BLOQUEADO');
+        }
 
         res.setHeader('Content-Type', 'video/mp4');
         res.setHeader('Content-Disposition', 'attachment; filename="video.mp4"');
@@ -53,7 +61,7 @@ app.get('/api/proxy-download', async (req, res) => {
     }
 });
 
-// Endpoint principal
+// Endpoint principal para extraer URLs
 app.post('/api/descargar', async (req, res) => {
     const { url, plataforma } = req.body;
 
@@ -62,7 +70,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 
     try {
-        // Lógica de extracción de URL del video
+        // Tu lógica de extracción existente
         return res.json({
             exito: true,
             videoUrlHD: 'https://ejemplo.com/video_hd.mp4',
