@@ -5,20 +5,23 @@ const cors = require('cors');
 
 const app = express();
 
-app.use(cors());
+// Habilitar CORS con exposición de cabeceras para descargas fluidas
+app.use(cors({
+    origin: '*',
+    exposedHeaders: ['Content-Disposition']
+}));
+
 app.use(express.json());
 
-// Endpoint proxy para forzar la descarga de videos (Pinterest, TikTok e Instagram)
+// Endpoint proxy para servir o forzar la descarga de videos evitando restricciones CORS/Referer
 app.get('/api/proxy-download', async (req, res) => {
     const videoUrl = req.query.url;
-    const customFilename = req.query.filename || 'video_mediaflow.mp4';
 
     if (!videoUrl) {
         return res.status(400).send('URL no proporcionada');
     }
 
     try {
-        // Asignar el Referer adecuado según la plataforma detectada en la URL del recurso
         let refererHeader = 'https://www.tiktok.com/';
         if (videoUrl.includes('pinimg.com') || videoUrl.includes('pinterest')) {
             refererHeader = 'https://www.pinterest.com/';
@@ -36,11 +39,9 @@ app.get('/api/proxy-download', async (req, res) => {
             }
         });
 
-        // Forzar la descarga del archivo en el navegador
-        res.setHeader('Content-Disposition', `attachment; filename="${customFilename}"`);
         res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Content-Disposition', 'attachment; filename="video.mp4"');
 
-        // Canalizar el flujo de datos directamente al cliente
         response.data.pipe(res);
     } catch (error) {
         console.error('Error en proxy-download:', error.message);
@@ -48,7 +49,7 @@ app.get('/api/proxy-download', async (req, res) => {
     }
 });
 
-// Endpoint principal para procesar las solicitudes desde el frontend
+// Endpoint de procesamiento de enlaces
 app.post('/api/descargar', async (req, res) => {
     const { url, plataforma } = req.body;
 
@@ -57,24 +58,23 @@ app.post('/api/descargar', async (req, res) => {
     }
 
     try {
-        // Lógica de extracción según la plataforma
-        // Reemplazar con la integración o API correspondiente para TikTok, Pinterest e Instagram
-        
+        // Aquí conectas con tu extractor/API específica según la plataforma
+        // Ejemplo de respuesta estructurada:
         return res.json({
             exito: true,
-            videoUrlHD: 'URL_DEL_VIDEO_HD',
-            videoUrl: 'URL_DEL_VIDEO_SD'
+            videoUrlHD: 'https://ejemplo.com/video_hd.mp4',
+            videoUrl: 'https://ejemplo.com/video_sd.mp4'
         });
     } catch (error) {
         console.error(`Error procesando enlace de ${plataforma}:`, error.message);
         return res.status(500).json({
             exito: false,
-            mensaje: 'No se pudo obtener el video. Intenta con otro enlace.'
+            mensaje: 'No se pudo obtener el video. Verifica la URL introducida.'
         });
     }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor corriendo en el puerto ${PORT}`);
+    console.log(`Servidor activo en el puerto ${PORT}`);
 });
