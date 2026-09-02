@@ -1,78 +1,39 @@
 // server.js
 const express = require('express');
-const axios = require('axios');
 const cors = require('cors');
+const axios = require('axios');
 
 const app = express();
-
-app.use(cors({
-    origin: '*',
-    exposedHeaders: ['Content-Disposition']
-}));
-
+app.use(cors());
 app.use(express.json());
 
-// Proxy para forzar la descarga directa del archivo sin errores de CORS
-app.get('/api/proxy-download', async (req, res) => {
-    const videoUrl = req.query.url;
+app.post('/api/descargar', async (req, res) => {
+    const { url } = req.body;
 
-    if (!videoUrl) {
-        return res.status(400).send('URL no proporcionada');
+    if (!url || !url.includes('pin')) {
+        return res.status(400).json({ error: 'URL de Pinterest no válida.' });
     }
 
     try {
-        let refererHeader = 'https://www.tiktok.com/';
-        if (videoUrl.includes('pinimg.com') || videoUrl.includes('pinterest')) {
-            refererHeader = 'https://www.pinterest.com/';
+        const response = await axios.get(url);
+        const html = response.data;
+        
+        const videoRegex = /"contentUrl":"(https:\/\/[^"]+\.mp4)"/;
+        const match = html.match(videoRegex);
+
+        if (match && match[1]) {
+            const videoUrl = match[1].replace(/\\\//g, '/');
+            return res.json({ exito: true, videoUrl: videoUrl });
+        } else {
+            return res.status(404).json({ error: 'No se encontró un video en este Pin.' });
         }
 
-        const response = await axios({
-            method: 'GET',
-            url: videoUrl,
-            responseType: 'stream',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Referer': refererHeader
-            }
-        });
-
-        // Configurar cabeceras para forzar la descarga de un archivo .mp4
-        res.setHeader('Content-Type', 'video/mp4');
-        res.setHeader('Content-Disposition', 'attachment; filename="video.mp4"');
-
-        response.data.pipe(res);
     } catch (error) {
-        console.error('Error en proxy-download:', error.message);
-        // Si la petición stream falla, redirigir directamente al enlace del video
-        res.redirect(videoUrl);
+        return res.status(500).json({ error: 'Error al procesar el enlace.' });
     }
 });
 
-// Endpoint principal para procesar y extraer la URL multimedia
-app.post('/api/descargar', async (req, res) => {
-    const { url, plataforma } = req.body;
-
-    if (!url) {
-        return res.status(400).json({ exito: false, mensaje: 'Proporciona un enlace válido.' });
-    }
-
-    try {
-        // Tu lógica de extracción existente aquí...
-        return res.json({
-            exito: true,
-            videoUrlHD: 'https://ejemplo.com/video_hd.mp4',
-            videoUrl: 'https://ejemplo.com/video_sd.mp4'
-        });
-    } catch (error) {
-        console.error(`Error procesando enlace de ${plataforma}:`, error.message);
-        return res.status(500).json({
-            exito: false,
-            mensaje: 'No se pudo obtener el video. Verifica la URL introducida.'
-        });
-    }
-});
-
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 app.listen(PORT, () => {
-    console.log(`Servidor activo en el puerto ${PORT}`);
+    console.log(`Servidor corriendo en http://localhost:${PORT}`);
 });
