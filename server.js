@@ -12,7 +12,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// Endpoint proxy para transmitir el flujo binario de los videos
+// Proxy de transmisión con simulación de navegador real
 app.get('/api/proxy-download', async (req, res) => {
     const videoUrl = req.query.url;
 
@@ -32,18 +32,25 @@ app.get('/api/proxy-download', async (req, res) => {
             method: 'GET',
             url: videoUrl,
             responseType: 'stream',
+            maxRedirects: 10,
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,video/*,*/*;q=0.8',
+                'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
                 'Referer': refererHeader,
-                'Accept': '*/*'
+                'Sec-Fetch-Dest': 'video',
+                'Sec-Fetch-Mode': 'no-cors',
+                'Sec-Fetch-Site': 'cross-site'
             }
         });
 
-        if (response.status >= 400) {
-            return res.status(response.status).send('No se pudo acceder al archivo multimedia original.');
+        const contentType = response.headers['content-type'] || '';
+        
+        if (contentType.includes('text/html') || contentType.includes('application/json')) {
+            return res.status(403).send('BLOQUEADO_POR_PLATAFORMA');
         }
 
-        res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp4');
+        res.setHeader('Content-Type', 'video/mp4');
         if (response.headers['content-length']) {
             res.setHeader('Content-Length', response.headers['content-length']);
         }
@@ -56,7 +63,7 @@ app.get('/api/proxy-download', async (req, res) => {
     }
 });
 
-// Endpoint principal de la API
+// Endpoint principal
 app.post('/api/descargar', async (req, res) => {
     const { url, plataforma } = req.body;
 
@@ -65,7 +72,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 
     try {
-        // Integración de la extracción según la plataforma
+        // Lógica para extraer la URL directa del video según la plataforma
         return res.json({
             exito: true,
             videoUrlHD: 'https://ejemplo.com/video_hd.mp4',
