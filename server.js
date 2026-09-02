@@ -12,7 +12,7 @@ app.use(cors({
 
 app.use(express.json());
 
-// Proxy de transmisión con simulación de navegador real
+// Proxy de descarga que pasa el stream directamente al cliente
 app.get('/api/proxy-download', async (req, res) => {
     const videoUrl = req.query.url;
 
@@ -24,8 +24,6 @@ app.get('/api/proxy-download', async (req, res) => {
         let refererHeader = 'https://www.tiktok.com/';
         if (videoUrl.includes('pinimg.com') || videoUrl.includes('pinterest')) {
             refererHeader = 'https://www.pinterest.com/';
-        } else if (videoUrl.includes('cdninstagram.com') || videoUrl.includes('instagram')) {
-            refererHeader = 'https://www.instagram.com/';
         }
 
         const response = await axios({
@@ -35,31 +33,23 @@ app.get('/api/proxy-download', async (req, res) => {
             maxRedirects: 10,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,video/*,*/*;q=0.8',
-                'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-                'Referer': refererHeader,
-                'Sec-Fetch-Dest': 'video',
-                'Sec-Fetch-Mode': 'no-cors',
-                'Sec-Fetch-Site': 'cross-site'
+                'Accept': '*/*',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Referer': refererHeader
             }
         });
 
-        const contentType = response.headers['content-type'] || '';
-        
-        if (contentType.includes('text/html') || contentType.includes('application/json')) {
-            return res.status(403).send('BLOQUEADO_POR_PLATAFORMA');
-        }
-
         res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Content-Disposition', 'attachment; filename="video.mp4"');
+
         if (response.headers['content-length']) {
             res.setHeader('Content-Length', response.headers['content-length']);
         }
-        res.setHeader('Content-Disposition', 'attachment; filename="video.mp4"');
 
         response.data.pipe(res);
     } catch (error) {
         console.error('Error en proxy-download:', error.message);
-        res.status(500).send('Error al procesar la descarga del archivo.');
+        res.status(500).send('Error procesando la descarga.');
     }
 });
 
@@ -72,7 +62,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 
     try {
-        // Lógica para extraer la URL directa del video según la plataforma
+        // Lógica de extracción de URL del video
         return res.json({
             exito: true,
             videoUrlHD: 'https://ejemplo.com/video_hd.mp4',
