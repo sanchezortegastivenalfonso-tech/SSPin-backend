@@ -2,7 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const { execFile } = require('child_process');
+const { exec } = require('child_process');
+const ffmpegPath = require('ffmpeg-static');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const app = express();
@@ -43,7 +44,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// --- LÓGICA DE SPOTIFY (USA YT-DLP Y FFMPEG) ---
+// --- LÓGICA DE SPOTIFY ---
 async function procesarSpotify(input, res) {
     let trackTitle = '';
     let coverImage = '';
@@ -55,14 +56,25 @@ async function procesarSpotify(input, res) {
         }
         const cleanUrl = `https://open.spotify.com/track/${match[1]}`;
 
+        // Intentar obtener metadatos vía oEmbed
         const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
         if (oembedRes.ok) {
             const oembedData = await oembedRes.json();
             trackTitle = oembedData.title || '';
             coverImage = oembedData.thumbnail_url || '';
         }
+
+        // Fallback: Si oembed no devuelve título, extraer del HTML (meta tags)
+        if (!trackTitle) {
+            const htmlRes = await fetch(cleanUrl);
+            const html = await htmlRes.text();
+            const titleMatch = html.match(/<property="og:title" content="([^"]+)"/i) || html.match(/<title>([^<]+)<\/title>/i);
+            if (titleMatch) {
+                trackTitle = titleMatch[1].replace(' | Spotify', '').replace(' - song and lyrics by Spotify', '');
+            }
+        }
     } catch (e) {
-        console.log('Error oembed:', e.message);
+        console.log('Error metadatos:', e.message);
     }
 
     if (!trackTitle) {
@@ -70,22 +82,12 @@ async function procesarSpotify(input, res) {
     }
 
     const fileId = `song_${Date.now()}`;
-    const outputTemplate = path.join(downloadsDir, `${fileId}.%(ext)s`);
-    const ytDlpPath = path.join(__dirname, 'yt-dlp.exe');
+    const outputFilePath = path.join(downloadsDir, `${fileId}.mp3`);
     
-    // Ruta directa a la raíz donde están ffmpeg.exe y ffprobe.exe
-    const ffmpegPath = __dirname;
+    // Comando multiplataforma (funciona en Linux/Render y Windows si yt-dlp está instalado)
+    const command = `npx yt-dlp -x --audio-format mp3 --ffmpeg-location "${ffmpegPath}" -o "${downloadsDir}/${fileId}.%(ext)s" "ytsearch1:${trackTitle}"`;
 
-    const args = [
-        '-x',
-        '--audio-format', 'mp3',
-        '--ffmpeg-location', ffmpegPath,
-        '--extractor-args', 'youtube:player_client=android,web',
-        '-o', outputTemplate,
-        `ytsearch1:${trackTitle}`
-    ];
-
-    execFile(ytDlpPath, args, (error, stdout, stderr) => {
+    exec(command, (error, stdout, stderr) => {
         if (error) {
             console.error('Error al ejecutar yt-dlp:', error.message);
             console.error('Stderr:', stderr);
