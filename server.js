@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 // LISTA Y ROTACIÓN DE API KEYS (RAPIDAPI)
 // ==========================================
 const API_KEYS = [
+    '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038', // Clave original
     'd57a57f0e6msh60d33aa70fd4bfap142a4ejsn3dd732d92d81', // Primera
     'cfe9f96619msh2bf6f1ef96b6f5dp1ca3b8jsn55c76c99edbb', // Segunda
     'ff647c7411msh1f8a4b925654801p17bfa0jsn43708a13c350', // Tercera
@@ -203,7 +204,7 @@ async function procesarSpotify(input, res) {
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No fue posible obtener el audio de Spotify. Por favor, reintenta en un momento.'
+            mensaje: 'Se ha alcanzado el límite de descargas diarias de Spotify. Por favor, intenta de nuevo mañana.'
         });
 
     } catch (e) {
