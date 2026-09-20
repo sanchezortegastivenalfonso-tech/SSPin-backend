@@ -41,7 +41,7 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos oficiales y portada HD desde Spotify
+        // 1. Obtener metadatos oficiales y portada HD
         let trackTitle = 'Canción de Spotify';
         let artistName = '';
         let coverImage = '';
@@ -55,57 +55,55 @@ async function procesarSpotify(input, res) {
                 coverImage = oembedData.thumbnail_url || '';
             }
         } catch (e) {
-            console.log('Error metadatos Spotify:', e.message);
+            console.log('Error oembed:', e.message);
         }
 
         const query = `${trackTitle} ${artistName}`.trim();
 
-        // 2. Buscar y extraer audio con instancias Invidious (fallback de alta disponibilidad)
-        const invidiousInstances = [
-            'https://inv.hostux.net',
-            'https://invidious.nerdvpn.de',
-            'https://invidious.drgns.space',
-            'https://vid.puffyan.us'
-        ];
-
-        for (const instance of invidiousInstances) {
-            try {
-                const searchRes = await fetch(`${instance}/api/v1/search?q=${encodeURIComponent(query)}&type=video`);
-                if (searchRes.ok) {
-                    const searchData = await searchRes.json();
-                    if (searchData && searchData.length > 0) {
-                        const videoId = searchData[0].videoId;
-                        const videoRes = await fetch(`${instance}/api/v1/videos/${videoId}`);
-                        if (videoRes.ok) {
-                            const videoData = await videoRes.json();
-                            const audioStreams = videoData.adaptiveFormats ? 
-                                videoData.adaptiveFormats.filter(f => f.type && f.type.startsWith('audio/')) : [];
-                            
-                            if (audioStreams.length > 0) {
-                                // Seleccionar la mejor calidad de audio
-                                audioStreams.sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0));
-                                const audioUrl = audioStreams[0].url;
-
-                                return res.json({
-                                    exito: true,
-                                    titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
-                                    coverUrl: coverImage,
-                                    cover: coverImage,
-                                    audioUrl: audioUrl,
-                                    downloadUrl: audioUrl
-                                });
-                            }
-                        }
-                    }
+        // 2. Extraer enlace MP3 usando APIs rápidas con fallback
+        // Opción 1: API de SpotMate
+        try {
+            const spotRes = await fetch(`https://spotmate.online/api/download?url=${encodeURIComponent(cleanUrl)}`);
+            if (spotRes.ok) {
+                const spotData = await spotRes.json();
+                if (spotData && spotData.url) {
+                    return res.json({
+                        exito: true,
+                        titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
+                        coverUrl: coverImage,
+                        cover: coverImage,
+                        audioUrl: spotData.url,
+                        downloadUrl: spotData.url
+                    });
                 }
-            } catch (err) {
-                console.log(`Fallo en instancia ${instance}, intentando siguiente...`);
             }
+        } catch (e) {
+            console.log('Fallo Spotmate');
+        }
+
+        // Opción 2: Motor YTMP3 público de respaldo
+        try {
+            const ytSearchRes = await fetch(`https://api.vytmp3.com/api/search?q=${encodeURIComponent(query)}`);
+            if (ytSearchRes.ok) {
+                const ytData = await ytSearchRes.json();
+                if (ytData && ytData.length > 0 && ytData[0].url) {
+                    return res.json({
+                        exito: true,
+                        titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
+                        coverUrl: coverImage,
+                        cover: coverImage,
+                        audioUrl: ytData[0].url,
+                        downloadUrl: ytData[0].url
+                    });
+                }
+            }
+        } catch (e) {
+            console.log('Fallo Vytmp3');
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No fue posible procesar la canción en este momento. Revisa la URL e intenta nuevamente.'
+            mensaje: 'No fue posible extraer el audio. Intenta nuevamente.'
         });
 
     } catch (e) {
