@@ -1,166 +1,148 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
-const axios = require('axios');
-const cheerio = require('cheerio');
+const path = require('path');
+const fs = require('fs');
+const { execFile } = require('child_process');
+const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.static(__dirname));
 
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-
-// Función para resolver URLs acortadas (pin.it / vt.tiktok.com) a la URL final
-async function resolverUrlFinal(urlOriginal) {
-    try {
-        const res = await axios.get(urlOriginal, {
-            headers: { 'User-Agent': USER_AGENT },
-            maxRedirects: 10,
-            timeout: 8000
-        });
-        return res.request.res.responseUrl || urlOriginal;
-    } catch (e) {
-        return urlOriginal;
-    }
+// Carpeta temporal para guardar las descargas
+const downloadsDir = path.join(__dirname, 'downloads');
+if (!fs.existsSync(downloadsDir)) {
+    fs.mkdirSync(downloadsDir);
 }
+app.use('/downloads', express.static(downloadsDir));
 
-// Extractor para TikTok
-async function obtenerVideoTikTok(urlEntrada) {
-    const urlFinal = await resolverUrlFinal(urlEntrada);
-
-    // Intento 1: API Directa de TikWM
-    try {
-        const apiRes = await axios.post('https://www.tikwm.com/api/', 
-            new URLSearchParams({ url: urlFinal, hd: '1' }).toString(), 
-            {
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': USER_AGENT },
-                timeout: 8000
-            }
-        );
-
-        if (apiRes.data && apiRes.data.code === 0 && apiRes.data.data) {
-            return {
-                exito: true,
-                videoUrl: apiRes.data.data.play
-            };
-        }
-    } catch (err) {
-        console.warn('TikWM falló, intentando SSSTik...');
-    }
-
-    // Intento 2: SSSTik
-    try {
-        const response = await axios.post('https://ssstik.io/abc?url=dl', 
-            new URLSearchParams({ 'id': urlFinal, 'locale': 'es', 'tt': 'W1dSM3lh' }).toString(), 
-            {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': USER_AGENT,
-                    'Origin': 'https://ssstik.io',
-                    'Referer': 'https://ssstik.io/es'
-                },
-                timeout: 8000
-            }
-        );
-
-        const $ = cheerio.load(response.data);
-        const downloadUrl = $('a.without_watermark').attr('href') || $('a.dl-button').attr('href');
-
-        if (downloadUrl) {
-            return { exito: true, videoUrl: downloadUrl };
-        }
-    } catch (err) {
-        console.error('Error en TikTok:', err.message);
-    }
-
-    return null;
-}
-
-// Extractor para Pinterest
-async function obtenerVideoPinterest(urlEntrada) {
-    try {
-        // Resolver pin.it a pinterest.com/pin/...
-        const response = await axios.get(urlEntrada, {
-            headers: { 'User-Agent': USER_AGENT },
-            maxRedirects: 10
-        });
-
-        const html = response.data;
-        const videoRegex = /"contentUrl":"(https:\/\/[^"]+\.mp4)"/;
-        const match = html.match(videoRegex);
-
-        if (match && match[1]) {
-            const directVideoUrl = match[1].replace(/\\\//g, '/');
-            return { exito: true, videoUrl: directVideoUrl };
-        }
-    } catch (error) {
-        console.error('Error en Pinterest:', error.message);
-    }
-
-    return null;
-}
-
-// Endpoint Principal API
+// --- ENDPOINT PRINCIPAL DE DESCARGA ---
 app.post('/api/descargar', async (req, res) => {
     const { url, plataforma } = req.body;
 
     if (!url) {
-        return res.status(400).json({ error: 'Debes proporcionar una URL.' });
+        return res.status(400).json({ exito: false, mensaje: 'Debes proporcionar un enlace válido.' });
     }
-
-    const esPinterest = plataforma === 'pinterest' || url.includes('pin.it') || url.includes('pinterest');
-    const esTikTok = plataforma === 'tiktok' || url.includes('vt.tiktok.com') || url.includes('tiktok.com');
-
-    if (esPinterest) {
-        const resultado = await obtenerVideoPinterest(url);
-        if (resultado) {
-            // Se envía a través del proxy para omitir bloqueos de reproductor
-            const proxyUrl = `/api/proxy-download?url=${encodeURIComponent(resultado.videoUrl)}`;
-            return res.json({ exito: true, videoUrl: proxyUrl });
-        } else {
-            return res.status(404).json({ error: 'No se encontró un video en este Pin.' });
-        }
-    } 
-    
-    if (esTikTok) {
-        const resultado = await obtenerVideoTikTok(url);
-        if (resultado) {
-            return res.json(resultado);
-        } else {
-            return res.status(404).json({ error: 'No se pudo obtener el video de TikTok. Revisa la URL.' });
-        }
-    }
-
-    return res.status(400).json({ error: 'URL no compatible.' });
-});
-
-// Proxy de transmisión
-app.get('/api/proxy-download', async (req, res) => {
-    const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).send('URL no proporcionada');
 
     try {
-        const response = await axios({
-            method: 'get',
-            url: targetUrl,
-            responseType: 'stream',
-            headers: {
-                'User-Agent': USER_AGENT,
-                'Referer': 'https://www.pinterest.com/'
-            }
-        });
-
-        res.setHeader('Content-Type', 'video/mp4');
-        res.setHeader('Content-Disposition', 'inline; filename="video_pinterest.mp4"');
-        response.data.pipe(res);
+        if (plataforma === 'spotify') {
+            return await procesarSpotify(url, res);
+        } else if (plataforma === 'tiktok') {
+            return await procesarTikTok(url, res);
+        } else if (plataforma === 'pinterest') {
+            return await procesarPinterest(url, res);
+        } else {
+            return res.status(400).json({ exito: false, mensaje: 'Plataforma no soportada.' });
+        }
     } catch (error) {
-        console.error('Error en proxy:', error.message);
-        res.status(500).send('Error al transmitir el video.');
+        console.error('Error general:', error.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error interno en el servidor.' });
     }
 });
 
+// --- LÓGICA DE SPOTIFY (USA YT-DLP Y FFMPEG) ---
+async function procesarSpotify(input, res) {
+    let trackTitle = '';
+    let coverImage = '';
+
+    try {
+        const match = input.match(/track\/([a-zA-Z0-9]+)/);
+        if (!match) {
+            return res.status(400).json({ exito: false, mensaje: 'URL de canción no válida.' });
+        }
+        const cleanUrl = `https://open.spotify.com/track/${match[1]}`;
+
+        const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
+        if (oembedRes.ok) {
+            const oembedData = await oembedRes.json();
+            trackTitle = oembedData.title || '';
+            coverImage = oembedData.thumbnail_url || '';
+        }
+    } catch (e) {
+        console.log('Error oembed:', e.message);
+    }
+
+    if (!trackTitle) {
+        return res.status(400).json({ exito: false, mensaje: 'No se pudo leer la información de la canción.' });
+    }
+
+    const fileId = `song_${Date.now()}`;
+    const outputTemplate = path.join(downloadsDir, `${fileId}.%(ext)s`);
+    const ytDlpPath = path.join(__dirname, 'yt-dlp.exe');
+    
+    // Ruta directa a la raíz donde están ffmpeg.exe y ffprobe.exe
+    const ffmpegPath = __dirname;
+
+    const args = [
+        '-x',
+        '--audio-format', 'mp3',
+        '--ffmpeg-location', ffmpegPath,
+        '--extractor-args', 'youtube:player_client=android,web',
+        '-o', outputTemplate,
+        `ytsearch1:${trackTitle}`
+    ];
+
+    execFile(ytDlpPath, args, (error, stdout, stderr) => {
+        if (error) {
+            console.error('Error al ejecutar yt-dlp:', error.message);
+            console.error('Stderr:', stderr);
+            return res.status(500).json({ 
+                exito: false, 
+                mensaje: 'Error al procesar el audio con yt-dlp.' 
+            });
+        }
+
+        return res.json({
+            exito: true,
+            titulo: trackTitle,
+            audioUrl: `/downloads/${fileId}.mp3`,
+            coverUrl: coverImage
+        });
+    });
+}
+
+// --- LÓGICA DE TIKTOK ---
+async function procesarTikTok(url, res) {
+    try {
+        const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`);
+        const data = await response.json();
+
+        if (data.code === 0 && data.data) {
+            return res.json({
+                exito: true,
+                videoUrlHD: data.data.hdplay || data.data.play,
+                videoUrl: data.data.play
+            });
+        }
+        return res.status(400).json({ exito: false, mensaje: 'No se encontró el video de TikTok.' });
+    } catch (err) {
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar TikTok.' });
+    }
+}
+
+// --- LÓGICA DE PINTEREST ---
+async function procesarPinterest(url, res) {
+    try {
+        const response = await fetch(`https://api.pinterestdownloader.com/download?url=${encodeURIComponent(url)}`);
+        const data = await response.json();
+
+        if (data && (data.url || data.video_url)) {
+            const videoLink = data.video_url || data.url;
+            return res.json({
+                exito: true,
+                videoUrlHD: videoLink,
+                videoUrl: videoLink
+            });
+        }
+        return res.status(400).json({ exito: false, mensaje: 'No se encontró contenido descargable en este Pin.' });
+    } catch (err) {
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar Pinterest.' });
+    }
+}
+
 app.listen(PORT, () => {
-    console.log(`Servidor corriendo en puerto ${PORT}`);
+    console.log(`Servidor activo en http://localhost:${PORT}`);
 });
