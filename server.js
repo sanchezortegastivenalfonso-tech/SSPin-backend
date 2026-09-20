@@ -52,7 +52,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// Endpoint proxy para servir el MP3 con etiquetas ID3v2.3 incrustadas
+// Endpoint proxy para servir el MP3 de forma compatible y segura
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
     const title = req.query.title || 'Canción';
@@ -78,12 +78,11 @@ app.get('/api/download-file', async (req, res) => {
         const arrayBuffer = await response.arrayBuffer();
         let buffer = Buffer.from(arrayBuffer);
 
-        // Configuración de etiquetas ID3 v2.3
+        // Construir etiquetas básicas sin corromper la estructura de audio
         const tags = {
             title: title,
             artist: artist,
-            album: album,
-            TRCK: '1'
+            album: album
         };
 
         if (coverUrl) {
@@ -91,9 +90,8 @@ app.get('/api/download-file', async (req, res) => {
                 const imgRes = await fetch(coverUrl);
                 if (imgRes.ok) {
                     const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
-                    const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
                     tags.image = {
-                        mime: contentType.includes('png') ? 'image/png' : 'image/jpeg',
+                        mime: 'image/jpeg',
                         type: { id: 3, name: 'front cover' },
                         description: 'Cover',
                         imageBuffer: imgBuffer
@@ -104,10 +102,14 @@ app.get('/api/download-file', async (req, res) => {
             }
         }
 
-        // Inyectar metadatos con la opción explicitID3v23 para máxima compatibilidad
-        const taggedBuffer = NodeID3.write(tags, buffer, { explicitID3v23: true });
-        if (taggedBuffer) {
-            buffer = taggedBuffer;
+        // Inyección de etiquetas asegurando buffer válido
+        try {
+            const taggedBuffer = NodeID3.write(tags, buffer);
+            if (taggedBuffer && taggedBuffer.length > 0) {
+                buffer = taggedBuffer;
+            }
+        } catch (id3Err) {
+            console.error('Error inyectando ID3:', id3Err.message);
         }
 
         const cleanFileName = `${artist} - ${title}.mp3`.replace(/[/\\?%*:|"<>]/g, '');
@@ -119,7 +121,7 @@ app.get('/api/download-file', async (req, res) => {
 
     } catch (error) {
         console.error('Error en proxy de descarga:', error.message);
-        res.status(500).send('Error al procesar el archivo con metadatos.');
+        res.status(500).send('Error al procesar el archivo.');
     }
 });
 
@@ -137,7 +139,6 @@ async function procesarSpotify(input, res) {
         let artistName = '';
         let coverImage = '';
 
-        // Obtener datos desde oembed oficial de Spotify
         try {
             const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.ok) {
@@ -152,7 +153,6 @@ async function procesarSpotify(input, res) {
 
         let rawAudioUrl = '';
 
-        // Obtención de audio mediante RapidAPI
         if (RAPIDAPI_KEY) {
             try {
                 const rapidRes = await fetch(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
@@ -165,16 +165,15 @@ async function procesarSpotify(input, res) {
                 if (rapidRes.ok) {
                     const rapidData = await rapidRes.json();
                     rawAudioUrl = rapidData.data?.downloadLink || rapidData.downloadLink || rapidData.url;
-                    if (!trackTitle) trackTitle = rapidData.data?.title || rapidData.title || 'Canción';
-                    if (!artistName) artistName = rapidData.data?.artist || rapidData.artists || 'Artista';
-                    if (!coverImage) coverImage = rapidData.data?.cover || rapidData.cover || '';
+                    if (!trackTitle) trackTitle = rapidData.data?.title || rapidData.title;
+                    if (!artistName) artistName = rapidData.data?.artist || rapidData.artists;
+                    if (!coverImage) coverImage = rapidData.data?.cover || rapidData.cover;
                 }
             } catch (err) {
                 console.log('Error RapidAPI:', err.message);
             }
         }
 
-        // Respaldo de descarga si falla la API principal
         if (!rawAudioUrl) {
             try {
                 const fallbackRes = await fetch(`https://api.spotifydown.com/download/${trackId}`, {
@@ -184,16 +183,16 @@ async function procesarSpotify(input, res) {
                     const fbData = await fallbackRes.json();
                     if (fbData.success && fbData.link) {
                         rawAudioUrl = fbData.link;
-                        if (!trackTitle) trackTitle = fbData.metadata?.title || 'Canción';
-                        if (!artistName) artistName = fbData.metadata?.artists || 'Artista';
-                        if (!coverImage) coverImage = fbData.metadata?.cover || '';
+                        if (!trackTitle) trackTitle = fbData.metadata?.title;
+                        if (!artistName) artistName = fbData.metadata?.artists;
+                        if (!coverImage) coverImage = fbData.metadata?.cover;
                     }
                 }
             } catch (e) {}
         }
 
-        if (!trackTitle) trackTitle = 'Canción de Spotify';
-        if (!artistName) artistName = 'Spotify Artist';
+        if (!trackTitle) trackTitle = 'Canción';
+        if (!artistName) artistName = 'Artista';
 
         if (rawAudioUrl) {
             const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawAudioUrl)}&title=${encodeURIComponent(trackTitle)}&artist=${encodeURIComponent(artistName)}&cover=${encodeURIComponent(coverImage)}`;
