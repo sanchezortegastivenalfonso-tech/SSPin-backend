@@ -12,7 +12,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Función auxiliar para expandir enlaces acortados (vt.tiktok.com, pin.it, etc.)
+// Expandir enlaces acortados (vt.tiktok.com, pin.it, etc.)
 async function expandirUrl(shortUrl) {
     try {
         const response = await fetch(shortUrl, {
@@ -28,7 +28,7 @@ async function expandirUrl(shortUrl) {
     }
 }
 
-// Endpoint principal para procesar los enlaces
+// Endpoint principal
 app.post('/api/descargar', async (req, res) => {
     let { url, plataforma } = req.body;
 
@@ -37,7 +37,6 @@ app.post('/api/descargar', async (req, res) => {
     }
 
     try {
-        // Expandir URL si viene comprimida
         url = await expandirUrl(url.trim());
 
         if (plataforma === 'spotify') {
@@ -55,7 +54,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// Endpoint proxy para forzar descarga directa y evitar bloqueos de CORS
+// Proxy para forzar descarga directa
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
     let fileName = req.query.name || 'archivo_media';
@@ -77,7 +76,6 @@ app.get('/api/download-file', async (req, res) => {
 
         const contentType = response.headers.get('content-type') || 'application/octet-stream';
         
-        // Asignar extensión adecuada si no la tiene
         if (!fileName.includes('.')) {
             if (contentType.includes('audio') || contentType.includes('mpeg')) {
                 fileName += '.mp3';
@@ -128,7 +126,6 @@ async function procesarSpotify(input, res) {
 
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
 
-        // Opción 1: RapidAPI
         if (RAPIDAPI_KEY) {
             try {
                 const rapidRes = await fetch(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
@@ -159,7 +156,6 @@ async function procesarSpotify(input, res) {
             }
         }
 
-        // Respaldo secundario: API SpotifyDown
         try {
             const fallbackRes = await fetch(`https://api.spotifydown.com/download/${trackId}`, {
                 headers: {
@@ -196,95 +192,113 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. PROCESAR TIKTOK
+// 2. PROCESAR TIKTOK (Con respaldo anti-bloqueo)
 // ==========================================
 async function procesarTikTok(url, res) {
     try {
+        // Intento 1: API de TikWM
         const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json'
             }
         });
-        const data = await response.json();
+        
+        const contentType = response.headers.get('content-type') || '';
+        
+        if (response.ok && contentType.includes('application/json')) {
+            const data = await response.json();
+            if (data.code === 0 && data.data) {
+                const videoHD = data.data.hdplay ? (data.data.hdplay.startsWith('http') ? data.data.hdplay : `https://tikwm.com${data.data.hdplay}`) : null;
+                const videoSD = data.data.play ? (data.data.play.startsWith('http') ? data.data.play : `https://tikwm.com${data.data.play}`) : null;
+                const mainVideo = videoHD || videoSD;
 
-        if (data.code === 0 && data.data) {
-            const videoHD = data.data.hdplay ? (data.data.hdplay.startsWith('http') ? data.data.hdplay : `https://tikwm.com${data.data.hdplay}`) : null;
-            const videoSD = data.data.play ? (data.data.play.startsWith('http') ? data.data.play : `https://tikwm.com${data.data.play}`) : null;
+                if (mainVideo) {
+                    const proxyHD = `/api/download-file?url=${encodeURIComponent(videoHD || mainVideo)}&name=TikTok_HD.mp4`;
+                    const proxySD = `/api/download-file?url=${encodeURIComponent(videoSD || mainVideo)}&name=TikTok_SD.mp4`;
 
-            const mainVideo = videoHD || videoSD;
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: proxyHD,
+                        videoUrl: proxySD,
+                        titulo: data.data.title || 'TikTok Video'
+                    });
+                }
+            }
+        }
 
-            if (mainVideo) {
-                const proxyHD = `/api/download-file?url=${encodeURIComponent(videoHD || mainVideo)}&name=TikTok_HD.mp4`;
-                const proxySD = `/api/download-file?url=${encodeURIComponent(videoSD || mainVideo)}&name=TikTok_SD.mp4`;
+        // Intento 2: API alternativa SSSTik (si TikWM falla)
+        const ssstikRes = await fetch(`https://ssstik.io/abc?url=dl`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            body: new URLSearchParams({ id: url, locale: 'es', tt: '0' })
+        });
 
+        if (ssstikRes.ok) {
+            const html = await ssstikRes.text();
+            const linkMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*download_link/i) || html.match(/href="(https:\/\/[^"]+)"/i);
+            if (linkMatch && linkMatch[1]) {
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(linkMatch[1])}&name=TikTok_Video.mp4`;
                 return res.json({
                     exito: true,
-                    videoUrlHD: proxyHD,
-                    videoUrl: proxySD,
-                    titulo: data.data.title || 'TikTok Video'
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: 'TikTok Video'
                 });
             }
         }
-        return res.status(400).json({ exito: false, mensaje: 'No se pudo obtener el video de TikTok. Comprueba el enlace.' });
+
+        return res.status(400).json({ exito: false, mensaje: 'No se pudo procesar este enlace de TikTok.' });
     } catch (err) {
         console.error('Error TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno procesando TikTok.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el video de TikTok.' });
     }
 }
 
 // ==========================================
-// 3. PROCESAR PINTEREST
+// 3. PROCESAR PINTEREST (Scraping Nativo Directo)
 // ==========================================
 async function procesarPinterest(url, res) {
     try {
-        // Intento 1: Scraping directo de metadatos OpenGraph de Pinterest
-        const pageRes = await fetch(url, {
+        const response = await fetch(url, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'es-ES,es;q=0.9'
             }
         });
 
-        if (pageRes.ok) {
-            const html = await pageRes.text();
-            
-            // Extraer video usando expresión regular sobre meta og:video
-            const videoMatch = html.match(/<meta property="og:video" content="(https?:\/\/[^"]+)"/i) || 
-                               html.match(/<meta name="og:video" content="(https?:\/\/[^"]+)"/i) ||
-                               html.match(/"video_list":\{"V_720P":\{"url":"(https?:\/\/[^"]+)"/i) ||
-                               html.match(/"url":"(https:\/\/v1\.pinimg\.com\/videos\/mc\/[^\"]+)"/i);
-
-            if (videoMatch && videoMatch[1]) {
-                const rawVideoUrl = videoMatch[1].replace(/\\/g, '');
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=Pinterest_Video.mp4`;
-
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: 'Pinterest Video'
-                });
-            }
+        if (!response.ok) {
+            return res.status(400).json({ exito: false, mensaje: 'No se pudo acceder al enlace de Pinterest.' });
         }
 
-        // Intento 2: API alternativa de respaldo para Pinterest
-        const apiRes = await fetch(`https://api.vkrdown.com/pinterest/?url=${encodeURIComponent(url)}`);
-        if (apiRes.ok) {
-            const apiData = await apiRes.json();
-            if (apiData.data && apiData.data.video) {
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(apiData.data.video)}&name=Pinterest_Video.mp4`;
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: apiData.data.title || 'Pinterest Video'
-                });
-            }
+        const html = await response.text();
+
+        // Extraer enlace del archivo .mp4 utilizando expresiones regulares sobre la página
+        const videoMatch = html.match(/https:\/\/[^"]+\.mp4/gi) || 
+                           html.match(/"video_list":\{"V_720P":\{"url":"(https?:\/\/[^"]+)"/i) ||
+                           html.match(/"url":"(https:\/\/v1\.pinimg\.com\/videos\/[^\"]+)"/i);
+
+        if (videoMatch && videoMatch[0]) {
+            let rawVideoUrl = videoMatch[0].replace(/\\/g, '');
+            if (videoMatch[1]) rawVideoUrl = videoMatch[1].replace(/\\/g, '');
+
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=Pinterest_Video.mp4`;
+
+            return res.json({
+                exito: true,
+                videoUrlHD: proxyUrl,
+                videoUrl: proxyUrl,
+                titulo: 'Pinterest Video'
+            });
         }
 
-        return res.status(400).json({ exito: false, mensaje: 'Este Pin no contiene un video descargable o es privado.' });
+        return res.status(400).json({ exito: false, mensaje: 'Este Pin no contiene un video válido para descargar.' });
     } catch (err) {
         console.error('Error Pinterest:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el video de Pinterest.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error interno procesando Pinterest.' });
     }
 }
 
