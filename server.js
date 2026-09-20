@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
+const { exec } = require('child_process');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const app = express();
@@ -11,14 +12,13 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Carpeta temporal para almacenar audios
+// Carpeta temporal de descargas
 const downloadsDir = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadsDir)) {
     fs.mkdirSync(downloadsDir, { recursive: true });
 }
 app.use('/downloads', express.static(downloadsDir));
 
-// --- ENDPOINT PRINCIPAL ---
 app.post('/api/descargar', async (req, res) => {
     const { url, plataforma } = req.body;
 
@@ -42,7 +42,6 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// --- LÓGICA DE SPOTIFY (DESCARGA DIRECTA Y PROXY DE ARCHIVO) ---
 async function procesarSpotify(input, req, res) {
     try {
         const match = input.match(/track\/([a-zA-Z0-9]+)/);
@@ -52,84 +51,67 @@ async function procesarSpotify(input, req, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos oficiales de la canción
-        let trackTitle = 'Cancion_Spotify';
+        // 1. Obtener metadatos reales de Spotify
+        let trackTitle = '';
+        let artistName = '';
         let coverImage = '';
+
         try {
             const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.ok) {
                 const oembedData = await oembedRes.json();
-                if (oembedData.title) trackTitle = oembedData.title.replace(/[/\\?%*:|"<>]/g, '');
-                if (oembedData.thumbnail_url) coverImage = oembedData.thumbnail_url;
+                trackTitle = oembedData.title || '';
+                artistName = oembedData.author_name || '';
+                coverImage = oembedData.thumbnail_url || '';
             }
         } catch (e) {
             console.log('Error oEmbed:', e.message);
         }
 
-        // 2. Pedir la URL directa del MP3 a la API pública de Cobalt
-        const cobaltRes = await fetch('https://api.cobalt.tools/', {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                url: cleanUrl,
-                downloadMode: 'audio',
-                audioFormat: 'mp3'
-            })
-        });
+        const searchQuery = trackTitle ? `${trackTitle} ${artistName}` : cleanUrl;
+        const timestamp = Date.now();
+        const outputFilename = `spotify_${timestamp}.mp3`;
+        const outputPath = path.join(downloadsDir, outputFilename);
 
-        const cobaltData = await cobaltRes.json();
+        // Detectar si yt-dlp está en la raíz del proyecto o en el sistema
+        const ytdlpBin = fs.existsSync(path.join(__dirname, 'yt-dlp')) ? './yt-dlp' : 'yt-dlp';
 
-        if (!cobaltRes.ok || !cobaltData.url) {
-            return res.status(400).json({ 
-                exito: false, 
-                mensaje: 'No se pudo procesar la canción de Spotify. Intenta nuevamente.' 
+        // Comando yt-dlp optimizado con User-Agent de navegador para bypass de bloqueo 403
+        const command = `${ytdlpBin} "ytsearch1:${searchQuery}" --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -x --audio-format mp3 --audio-quality 0 -o "${outputPath}" --no-playlist`;
+
+        exec(command, (error, stdout, stderr) => {
+            if (error || !fs.existsSync(outputPath)) {
+                console.error('Error al extraer audio con yt-dlp:', stderr || error.message);
+                return res.status(500).json({ 
+                    exito: false, 
+                    mensaje: 'No se pudo procesar la canción de Spotify. Intenta nuevamente.' 
+                });
+            }
+
+            // Generar enlace directo del servidor
+            const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+            const host = req.get('host');
+            const fileUrl = `${protocol}://${host}/downloads/${outputFilename}`;
+
+            // Auto-eliminar archivo del servidor a los 10 minutos
+            setTimeout(() => {
+                if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
+            }, 10 * 60 * 1000);
+
+            return res.json({
+                exito: true,
+                titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Audio Descargado',
+                audioUrl: fileUrl,
+                coverUrl: coverImage
             });
-        }
-
-        // 3. DESCARGAR EL ARCHIVO MP3 EN TU PROPIO SERVIDOR
-        // Esto evita que el usuario navegue a otra página o sea redirigido
-        const audioStreamRes = await fetch(cobaltData.url);
-        if (!audioStreamRes.ok) {
-            return res.status(500).json({ exito: false, mensaje: 'Error al transferir el archivo de audio.' });
-        }
-
-        const fileName = `spotify_${Date.now()}.mp3`;
-        const filePath = path.join(downloadsDir, fileName);
-        const fileStream = fs.createWriteStream(filePath);
-
-        await new Promise((resolve, reject) => {
-            audioStreamRes.body.pipe(fileStream);
-            audioStreamRes.body.on('error', reject);
-            fileStream.on('finish', resolve);
-        });
-
-        // 4. Retornar la URL directa alojada en TU servidor Render
-        const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-        const host = req.get('host');
-        const localAudioUrl = `${protocol}://${host}/downloads/${fileName}`;
-
-        // Limpiar archivo del servidor pasados 10 minutos
-        setTimeout(() => {
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        }, 10 * 60 * 1000);
-
-        return res.json({
-            exito: true,
-            titulo: trackTitle,
-            audioUrl: localAudioUrl,
-            coverUrl: coverImage
         });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al descargar la canción.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la canción.' });
     }
 }
 
-// --- LÓGICA DE TIKTOK ---
 async function procesarTikTok(url, res) {
     try {
         const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`);
@@ -147,7 +129,6 @@ async function procesarTikTok(url, res) {
     }
 }
 
-// --- LÓGICA DE PINTEREST ---
 async function procesarPinterest(url, res) {
     try {
         const response = await fetch(`https://api.pinterestdownloader.com/download?url=${encodeURIComponent(url)}`);
@@ -166,4 +147,4 @@ async function procesarPinterest(url, res) {
     }
 }
 
-app.listen(PORT, () => console.log(`Servidor escuchando en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor activo en el puerto ${PORT}`));
