@@ -1,6 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const app = express();
@@ -42,45 +41,75 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener Metadatos de Spotify
-        let trackTitle = '';
+        // 1. Obtener Metadatos y PORTADA real de Spotify (oEmbed)
+        let trackTitle = 'Canción de Spotify';
         let artistName = '';
+        let coverImage = '';
+
         try {
             const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.ok) {
                 const oembedData = await oembedRes.json();
-                trackTitle = oembedData.title || '';
+                trackTitle = oembedData.title || trackTitle;
                 artistName = oembedData.author_name || '';
+                coverImage = oembedData.thumbnail_url || '';
             }
-        } catch (e) {}
+        } catch (e) {
+            console.log('Error metadatos Spotify:', e.message);
+        }
 
-        const query = `${trackTitle} ${artistName}`.trim() || 'music';
+        const query = `${trackTitle} ${artistName}`.trim();
 
-        // 2. Extraer enlace MP3 directo desde iTunes (Sin bloqueos de IP en Render)
-        const itunesRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=1`);
-        if (itunesRes.ok) {
-            const itunesData = await itunesRes.json();
-            if (itunesData.results && itunesData.results.length > 0) {
-                const track = itunesData.results[0];
+        // 2. Buscar canción completa vía API directa
+        const searchRes = await fetch(`https://spotidown.app/api/download-track`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: cleanUrl })
+        }).catch(() => null);
+
+        if (searchRes && searchRes.ok) {
+            const data = await searchRes.json();
+            if (data && data.file_url) {
                 return res.json({
                     exito: true,
-                    titulo: `${track.trackName} - ${track.artistName}`,
-                    audioUrl: track.previewUrl,
-                    downloadUrl: track.previewUrl // Nombre compatible para tu HTML
+                    titulo: `${trackTitle} - ${artistName}`,
+                    coverUrl: coverImage || data.cover,
+                    cover: coverImage || data.cover,
+                    audioUrl: data.file_url,
+                    downloadUrl: data.file_url
                 });
             }
         }
 
-        // 3. Fallback alternativo vía API pública
-        const altRes = await fetch(`https://api.vagalume.com.br/api.php?art=${encodeURIComponent(artistName)}&mus=${encodeURIComponent(trackTitle)}`).catch(() => null);
+        // 3. Método Alternativo / Backup para obtener el MP3 completo
+        const backupRes = await fetch(`https://api.fabdl.com/spotify/get?url=${encodeURIComponent(cleanUrl)}`);
+        if (backupRes.ok) {
+            const backupData = await backupRes.json();
+            if (backupData.result) {
+                const mp3Convert = await fetch(`https://api.fabdl.com/spotify/mp3-convert-task/${backupData.result.gid}/${backupData.result.id}`);
+                const convertData = await mp3Convert.json();
+                if (convertData.result && convertData.result.download_url) {
+                    const finalUrl = `https://api.fabdl.com${convertData.result.download_url}`;
+                    return res.json({
+                        exito: true,
+                        titulo: `${trackTitle} - ${artistName}`,
+                        coverUrl: coverImage || backupData.result.image,
+                        cover: coverImage || backupData.result.image,
+                        audioUrl: finalUrl,
+                        downloadUrl: finalUrl
+                    });
+                }
+            }
+        }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se encontró una pista de audio disponible para esta canción.'
+            mensaje: 'No se pudo extraer la canción completa. Intenta de nuevo.'
         });
 
     } catch (e) {
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la solicitud de Spotify.' });
+        console.error('Error procesando Spotify:', e.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la canción.' });
     }
 }
 
@@ -91,7 +120,8 @@ async function procesarTikTok(url, res) {
         if (data.code === 0 && data.data) {
             return res.json({
                 exito: true,
-                downloadUrl: data.data.hdplay || data.data.play
+                downloadUrl: data.data.hdplay || data.data.play,
+                audioUrl: data.data.hdplay || data.data.play
             });
         }
         return res.status(400).json({ exito: false, mensaje: 'No se encontró el video.' });
@@ -105,9 +135,11 @@ async function procesarPinterest(url, res) {
         const response = await fetch(`https://api.pinterestdownloader.com/download?url=${encodeURIComponent(url)}`);
         const data = await response.json();
         if (data && (data.url || data.video_url)) {
+            const media = data.video_url || data.url;
             return res.json({
                 exito: true,
-                downloadUrl: data.video_url || data.url
+                downloadUrl: media,
+                audioUrl: media
             });
         }
         return res.status(400).json({ exito: false, mensaje: 'No se encontró el Pin.' });
