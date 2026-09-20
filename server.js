@@ -42,7 +42,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// --- LÓGICA DE SPOTIFY (CANCIÓN COMPLETA RESISTENTE A ERRORES JSON) ---
+// --- LÓGICA DE SPOTIFY (CANCIÓN COMPLETA VÍA COBALT API) ---
 async function procesarSpotify(input, res) {
     let trackTitle = '';
     let artistName = '';
@@ -56,7 +56,7 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos desde Spotify vía oEmbed
+        // 1. Obtener datos e imagen desde Spotify
         const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
         if (oembedRes.ok) {
             const oembedData = await oembedRes.json();
@@ -65,68 +65,33 @@ async function procesarSpotify(input, res) {
             coverImage = oembedData.thumbnail_url || '';
         }
 
-        if (!trackTitle) {
-            return res.status(400).json({ exito: false, mensaje: 'No se pudo leer la información de la canción.' });
-        }
-
-        const searchQuery = `${trackTitle} ${artistName}`.trim();
-
-        // 2. Extractor primario directo (SpotifyDown API con headers adecuados)
-        try {
-            const spotRes = await fetch(`https://api.spotifydown.com/download/${trackId}`, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                    'Origin': 'https://spotifydown.com',
-                    'Referer': 'https://spotifydown.com/'
-                }
-            });
-
-            if (spotRes.ok) {
-                const contentType = spotRes.headers.get('content-type') || '';
-                if (contentType.includes('application/json')) {
-                    const spotData = await spotRes.json();
-                    if (spotData && spotData.success && spotData.link) {
-                        return res.json({
-                            exito: true,
-                            titulo: `${trackTitle} - ${artistName}`,
-                            audioUrl: spotData.link,
-                            coverUrl: coverImage
-                        });
-                    }
-                }
-            }
-        } catch (err) {
-            console.log('Error Método 1 (SpotifyDown):', err.message);
-        }
-
-        // 3. Extractor de respaldo (Servicio de audio MP3 por búsqueda)
-        try {
-            const searchApi = await fetch(`https://api.ytm.pythondiscord.workers.dev/search?q=${encodeURIComponent(searchQuery)}`);
-            if (searchApi.ok) {
-                const searchData = await searchApi.json();
-                if (Array.isArray(searchData) && searchData.length > 0) {
-                    const videoId = searchData[0].videoId;
-                    if (videoId) {
-                        return res.json({
-                            exito: true,
-                            titulo: `${trackTitle} - ${artistName}`,
-                            audioUrl: `https://yt-download.org/api/button/mp3/${videoId}`,
-                            coverUrl: coverImage
-                        });
-                    }
-                }
-            }
-        } catch (err) {
-            console.log('Error Método 2 (YTM):', err.message);
-        }
-
-        // 4. Enlace directo de respaldo garantizado
-        return res.json({
-            exito: true,
-            titulo: `${trackTitle} - ${artistName}`,
-            audioUrl: `https://www.y2mate.com/download-youtube/${encodeURIComponent(searchQuery)}`,
-            coverUrl: coverImage
+        // 2. Extraer archivo de audio MP3 completo directamente usando la API de Cobalt
+        const cobaltRes = await fetch('https://co.wuk.sh/api/json', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                url: cleanUrl,
+                downloadMode: 'audio',
+                audioFormat: 'mp3'
+            })
         });
+
+        if (cobaltRes.ok) {
+            const cobaltData = await cobaltRes.json();
+            if (cobaltData && cobaltData.url) {
+                return res.json({
+                    exito: true,
+                    titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Canción de Spotify',
+                    audioUrl: cobaltData.url,
+                    coverUrl: coverImage
+                });
+            }
+        }
+
+        return res.status(400).json({ exito: false, mensaje: 'No se pudo generar el enlace directo en MP3.' });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
@@ -138,9 +103,7 @@ async function procesarSpotify(input, res) {
 async function procesarTikTok(url, res) {
     try {
         const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`);
-        if (!response.ok) {
-            return res.status(400).json({ exito: false, mensaje: 'Error en respuesta de TikTok.' });
-        }
+        if (!response.ok) return res.status(400).json({ exito: false, mensaje: 'Error en respuesta de TikTok.' });
         const data = await response.json();
 
         if (data.code === 0 && data.data) {
@@ -160,9 +123,7 @@ async function procesarTikTok(url, res) {
 async function procesarPinterest(url, res) {
     try {
         const response = await fetch(`https://api.pinterestdownloader.com/download?url=${encodeURIComponent(url)}`);
-        if (!response.ok) {
-            return res.status(400).json({ exito: false, mensaje: 'Error en respuesta de Pinterest.' });
-        }
+        if (!response.ok) return res.status(400).json({ exito: false, mensaje: 'Error en respuesta de Pinterest.' });
         const data = await response.json();
 
         if (data && (data.url || data.video_url)) {
