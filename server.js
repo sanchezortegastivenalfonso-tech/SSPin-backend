@@ -5,8 +5,8 @@ const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// REEMPLAZA ESTE TEXTO CON TU CLAVE GRATUITA DE RAPIDAPI
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'TU_CLAVE_RAPIDAPI_AQUI';
+// Tu clave de RapidAPI configurada
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038';
 
 app.use(cors());
 app.use(express.json());
@@ -44,7 +44,7 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos oficiales y portada mediante oEmbed público
+        // 1. Metadatos de Spotify mediante oEmbed
         let trackTitle = 'Canción de Spotify';
         let artistName = '';
         let coverImage = '';
@@ -61,10 +61,10 @@ async function procesarSpotify(input, res) {
             console.log('Error oembed:', e.message);
         }
 
-        // 2. Extracción mediante RapidAPI (Evita bloqueos de IP en Render)
-        if (RAPIDAPI_KEY && RAPIDAPI_KEY !== '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038';) {
+        // 2. Extracción vía RapidAPI
+        if (RAPIDAPI_KEY) {
             try {
-                const rapidRes = await fetch(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${trackId}`, {
+                const rapidRes = await fetch(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
                     method: 'GET',
                     headers: {
                         'x-rapidapi-key': RAPIDAPI_KEY,
@@ -74,23 +74,25 @@ async function procesarSpotify(input, res) {
 
                 if (rapidRes.ok) {
                     const rapidData = await rapidRes.json();
-                    if (rapidData && rapidData.data && rapidData.data.downloadLink) {
+                    const audioUrl = rapidData.data?.downloadLink || rapidData.downloadLink || rapidData.url;
+                    
+                    if (audioUrl) {
                         return res.json({
                             exito: true,
                             titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
-                            coverUrl: coverImage || rapidData.data.cover,
-                            cover: coverImage || rapidData.data.cover,
-                            audioUrl: rapidData.data.downloadLink,
-                            downloadUrl: rapidData.data.downloadLink
+                            coverUrl: coverImage || rapidData.data?.cover,
+                            cover: coverImage || rapidData.data?.cover,
+                            audioUrl: audioUrl,
+                            downloadUrl: audioUrl
                         });
                     }
                 }
             } catch (err) {
-                console.log('Error RapidAPI:', err.message);
+                console.log('Error en RapidAPI:', err.message);
             }
         }
 
-        // Respaldo por CDN directo
+        // Respaldo secundario
         try {
             const fallbackRes = await fetch(`https://api.spotifydown.com/download/${trackId}`, {
                 headers: {
@@ -112,12 +114,12 @@ async function procesarSpotify(input, res) {
                 }
             }
         } catch (e) {
-            console.log('Error CDN Respaldo');
+            console.log('Error en CDN de respaldo');
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el audio de Spotify. Configura tu API Key de RapidAPI.'
+            mensaje: 'No fue posible obtener el audio. Revisa que la suscripción a la API en RapidAPI esté activa.'
         });
 
     } catch (e) {
