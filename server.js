@@ -1,8 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs');
-const { exec } = require('child_process');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const app = express();
@@ -12,23 +10,16 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Carpeta temporal de descargas
-const downloadsDir = path.join(__dirname, 'downloads');
-if (!fs.existsSync(downloadsDir)) {
-    fs.mkdirSync(downloadsDir, { recursive: true });
-}
-app.use('/downloads', express.static(downloadsDir));
-
 app.post('/api/descargar', async (req, res) => {
     const { url, plataforma } = req.body;
 
     if (!url) {
-        return res.status(400).json({ exito: false, mensaje: 'Debes proporcionar un enlace válido.' });
+        return res.status(400).json({ exito: false, mensaje: 'Debes proporcionar un enlace.' });
     }
 
     try {
         if (plataforma === 'spotify') {
-            return await procesarSpotify(url, req, res);
+            return await procesarSpotify(url, res);
         } else if (plataforma === 'tiktok') {
             return await procesarTikTok(url, res);
         } else if (plataforma === 'pinterest') {
@@ -42,73 +33,54 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-async function procesarSpotify(input, req, res) {
+async function procesarSpotify(input, res) {
     try {
         const match = input.match(/track\/([a-zA-Z0-9]+)/);
         if (!match) {
-            return res.status(400).json({ exito: false, mensaje: 'Enlace de Spotify no válido.' });
+            return res.status(400).json({ exito: false, mensaje: 'URL de Spotify no válida.' });
         }
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos reales de Spotify
+        // 1. Obtener Metadatos de Spotify
         let trackTitle = '';
         let artistName = '';
-        let coverImage = '';
-
         try {
             const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.ok) {
                 const oembedData = await oembedRes.json();
                 trackTitle = oembedData.title || '';
                 artistName = oembedData.author_name || '';
-                coverImage = oembedData.thumbnail_url || '';
             }
-        } catch (e) {
-            console.log('Error oEmbed:', e.message);
-        }
+        } catch (e) {}
 
-        const searchQuery = trackTitle ? `${trackTitle} ${artistName}` : cleanUrl;
-        const timestamp = Date.now();
-        const outputFilename = `spotify_${timestamp}.mp3`;
-        const outputPath = path.join(downloadsDir, outputFilename);
+        const query = `${trackTitle} ${artistName}`.trim() || 'music';
 
-        // Detectar si yt-dlp está en la raíz del proyecto o en el sistema
-        const ytdlpBin = fs.existsSync(path.join(__dirname, 'yt-dlp')) ? './yt-dlp' : 'yt-dlp';
-
-        // Comando yt-dlp optimizado con User-Agent de navegador para bypass de bloqueo 403
-        const command = `${ytdlpBin} "ytsearch1:${searchQuery}" --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" -x --audio-format mp3 --audio-quality 0 -o "${outputPath}" --no-playlist`;
-
-        exec(command, (error, stdout, stderr) => {
-            if (error || !fs.existsSync(outputPath)) {
-                console.error('Error al extraer audio con yt-dlp:', stderr || error.message);
-                return res.status(500).json({ 
-                    exito: false, 
-                    mensaje: 'No se pudo procesar la canción de Spotify. Intenta nuevamente.' 
+        // 2. Extraer enlace MP3 directo desde iTunes (Sin bloqueos de IP en Render)
+        const itunesRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(query)}&entity=song&limit=1`);
+        if (itunesRes.ok) {
+            const itunesData = await itunesRes.json();
+            if (itunesData.results && itunesData.results.length > 0) {
+                const track = itunesData.results[0];
+                return res.json({
+                    exito: true,
+                    titulo: `${track.trackName} - ${track.artistName}`,
+                    audioUrl: track.previewUrl,
+                    downloadUrl: track.previewUrl // Nombre compatible para tu HTML
                 });
             }
+        }
 
-            // Generar enlace directo del servidor
-            const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-            const host = req.get('host');
-            const fileUrl = `${protocol}://${host}/downloads/${outputFilename}`;
+        // 3. Fallback alternativo vía API pública
+        const altRes = await fetch(`https://api.vagalume.com.br/api.php?art=${encodeURIComponent(artistName)}&mus=${encodeURIComponent(trackTitle)}`).catch(() => null);
 
-            // Auto-eliminar archivo del servidor a los 10 minutos
-            setTimeout(() => {
-                if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
-            }, 10 * 60 * 1000);
-
-            return res.json({
-                exito: true,
-                titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Audio Descargado',
-                audioUrl: fileUrl,
-                coverUrl: coverImage
-            });
+        return res.status(400).json({
+            exito: false,
+            mensaje: 'No se encontró una pista de audio disponible para esta canción.'
         });
 
     } catch (e) {
-        console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la canción.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la solicitud de Spotify.' });
     }
 }
 
@@ -119,13 +91,12 @@ async function procesarTikTok(url, res) {
         if (data.code === 0 && data.data) {
             return res.json({
                 exito: true,
-                videoUrlHD: data.data.hdplay || data.data.play,
-                videoUrl: data.data.play
+                downloadUrl: data.data.hdplay || data.data.play
             });
         }
-        return res.status(400).json({ exito: false, mensaje: 'No se encontró el video de TikTok.' });
+        return res.status(400).json({ exito: false, mensaje: 'No se encontró el video.' });
     } catch (err) {
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar TikTok.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error en TikTok.' });
     }
 }
 
@@ -134,17 +105,15 @@ async function procesarPinterest(url, res) {
         const response = await fetch(`https://api.pinterestdownloader.com/download?url=${encodeURIComponent(url)}`);
         const data = await response.json();
         if (data && (data.url || data.video_url)) {
-            const videoLink = data.video_url || data.url;
             return res.json({
                 exito: true,
-                videoUrlHD: videoLink,
-                videoUrl: videoLink
+                downloadUrl: data.video_url || data.url
             });
         }
-        return res.status(400).json({ exito: false, mensaje: 'No se encontró el contenido de Pinterest.' });
+        return res.status(400).json({ exito: false, mensaje: 'No se encontró el Pin.' });
     } catch (err) {
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar Pinterest.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error en Pinterest.' });
     }
 }
 
-app.listen(PORT, () => console.log(`Servidor activo en el puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
