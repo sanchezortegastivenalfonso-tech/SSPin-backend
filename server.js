@@ -1,12 +1,9 @@
 const express = require('express');
 const cors = require('cors');
-const NodeID3 = require('node-id3');
 const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038';
 
 app.use(cors());
 app.use(express.json());
@@ -18,7 +15,7 @@ async function expandirUrl(shortUrl) {
             method: 'GET',
             redirect: 'follow',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         });
         return response.url || shortUrl;
@@ -52,13 +49,10 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// Endpoint proxy para servir el MP3 de forma compatible y segura
+// Proxy de descarga directo sin alterar el encabezado de audio
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
-    const title = req.query.title || 'Canción';
-    const artist = req.query.artist || 'Artista';
-    const album = req.query.album || 'Spotify';
-    const coverUrl = req.query.cover || '';
+    const filename = req.query.filename || 'audio.mp3';
 
     if (!fileUrl) {
         return res.status(400).send('URL no proporcionada');
@@ -67,65 +61,29 @@ app.get('/api/download-file', async (req, res) => {
     try {
         const response = await fetch(fileUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         });
 
         if (!response.ok) {
-            return res.status(500).send('Error al obtener el archivo fuente');
+            return res.status(500).send('Error al obtener el archivo.');
         }
 
-        const arrayBuffer = await response.arrayBuffer();
-        let buffer = Buffer.from(arrayBuffer);
-
-        // Construir etiquetas básicas sin corromper la estructura de audio
-        const tags = {
-            title: title,
-            artist: artist,
-            album: album
-        };
-
-        if (coverUrl) {
-            try {
-                const imgRes = await fetch(coverUrl);
-                if (imgRes.ok) {
-                    const imgBuffer = Buffer.from(await imgRes.arrayBuffer());
-                    tags.image = {
-                        mime: 'image/jpeg',
-                        type: { id: 3, name: 'front cover' },
-                        description: 'Cover',
-                        imageBuffer: imgBuffer
-                    };
-                }
-            } catch (coverErr) {
-                console.error('Error descargando carátula:', coverErr.message);
-            }
-        }
-
-        // Inyección de etiquetas asegurando buffer válido
-        try {
-            const taggedBuffer = NodeID3.write(tags, buffer);
-            if (taggedBuffer && taggedBuffer.length > 0) {
-                buffer = taggedBuffer;
-            }
-        } catch (id3Err) {
-            console.error('Error inyectando ID3:', id3Err.message);
-        }
-
-        const cleanFileName = `${artist} - ${title}.mp3`.replace(/[/\\?%*:|"<>]/g, '');
+        const cleanFileName = filename.replace(/[/\\?%*:|"<>]/g, '');
 
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(cleanFileName)}"`);
         res.setHeader('Content-Type', 'audio/mpeg');
-        res.setHeader('Content-Length', buffer.length);
-        res.send(buffer);
+        
+        // Retransmitir el audio directamente como flujo continuo (Stream)
+        response.body.pipe(res);
 
     } catch (error) {
-        console.error('Error en proxy de descarga:', error.message);
-        res.status(500).send('Error al procesar el archivo.');
+        console.error('Error en descarga proxy:', error.message);
+        res.status(500).send('Error al descargar el archivo.');
     }
 });
 
-// PROCESAR SPOTIFY
+// LÓGICA DE SPOTIFY
 async function procesarSpotify(input, res) {
     try {
         const match = input.match(/track\/([a-zA-Z0-9]+)/);
@@ -135,77 +93,51 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        let trackTitle = '';
-        let artistName = '';
+        let trackTitle = 'Canción';
+        let artistName = 'Artista';
         let coverImage = '';
 
+        // Obtener datos e imagen vía oEmbed
         try {
             const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.ok) {
                 const oembedData = await oembedRes.json();
-                trackTitle = oembedData.title || '';
-                artistName = oembedData.author_name || '';
+                trackTitle = oembedData.title || trackTitle;
+                artistName = oembedData.author_name || artistName;
                 coverImage = oembedData.thumbnail_url || '';
             }
-        } catch (e) {
-            console.log('Error oembed:', e.message);
-        }
+        } catch (e) {}
 
-        let rawAudioUrl = '';
+        // Obtener audio vía API Cobalt
+        const cobaltRes = await fetch('https://co.wuk.sh/api/json', {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                url: cleanUrl,
+                downloadMode: 'audio',
+                audioFormat: 'mp3'
+            })
+        });
 
-        if (RAPIDAPI_KEY) {
-            try {
-                const rapidRes = await fetch(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
-                    headers: {
-                        'x-rapidapi-key': RAPIDAPI_KEY,
-                        'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
-                    }
+        if (cobaltRes.ok) {
+            const cobaltData = await cobaltRes.json();
+            if (cobaltData && cobaltData.url) {
+                const fullTitle = `${artistName} - ${trackTitle}.mp3`;
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(cobaltData.url)}&filename=${encodeURIComponent(fullTitle)}`;
+
+                return res.json({
+                    exito: true,
+                    titulo: `${artistName} - ${trackTitle}`,
+                    coverUrl: coverImage,
+                    audioUrl: proxyUrl
                 });
-
-                if (rapidRes.ok) {
-                    const rapidData = await rapidRes.json();
-                    rawAudioUrl = rapidData.data?.downloadLink || rapidData.downloadLink || rapidData.url;
-                    if (!trackTitle) trackTitle = rapidData.data?.title || rapidData.title;
-                    if (!artistName) artistName = rapidData.data?.artist || rapidData.artists;
-                    if (!coverImage) coverImage = rapidData.data?.cover || rapidData.cover;
-                }
-            } catch (err) {
-                console.log('Error RapidAPI:', err.message);
             }
         }
 
-        if (!rawAudioUrl) {
-            try {
-                const fallbackRes = await fetch(`https://api.spotifydown.com/download/${trackId}`, {
-                    headers: { 'Origin': 'https://spotifydown.com', 'Referer': 'https://spotifydown.com/' }
-                });
-                if (fallbackRes.ok) {
-                    const fbData = await fallbackRes.json();
-                    if (fbData.success && fbData.link) {
-                        rawAudioUrl = fbData.link;
-                        if (!trackTitle) trackTitle = fbData.metadata?.title;
-                        if (!artistName) artistName = fbData.metadata?.artists;
-                        if (!coverImage) coverImage = fbData.metadata?.cover;
-                    }
-                }
-            } catch (e) {}
-        }
-
-        if (!trackTitle) trackTitle = 'Canción';
-        if (!artistName) artistName = 'Artista';
-
-        if (rawAudioUrl) {
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawAudioUrl)}&title=${encodeURIComponent(trackTitle)}&artist=${encodeURIComponent(artistName)}&cover=${encodeURIComponent(coverImage)}`;
-
-            return res.json({
-                exito: true,
-                titulo: `${trackTitle} - ${artistName}`,
-                coverUrl: coverImage,
-                audioUrl: proxyUrl
-            });
-        }
-
-        return res.status(400).json({ exito: false, mensaje: 'No fue posible obtener el archivo de audio.' });
+        return res.status(400).json({ exito: false, mensaje: 'No fue posible procesar esta canción.' });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
@@ -213,34 +145,30 @@ async function procesarSpotify(input, res) {
     }
 }
 
-// PROCESAR TIKTOK
+// LÓGICA DE TIKTOK
 async function procesarTikTok(url, res) {
     try {
-        const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-        const contentType = response.headers.get('content-type') || '';
-        
-        if (response.ok && contentType.includes('application/json')) {
-            const data = await response.json();
-            if (data.code === 0 && data.data) {
-                const videoUrl = data.data.hdplay || data.data.play;
-                return res.json({
-                    exito: true,
-                    videoUrlHD: `/api/download-file?url=${encodeURIComponent(videoUrl)}&title=TikTok_HD`,
-                    videoUrl: `/api/download-file?url=${encodeURIComponent(data.data.play)}&title=TikTok_SD`,
-                    titulo: data.data.title || 'TikTok Video'
-                });
-            }
-        }
+        const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`);
+        if (!response.ok) return res.status(400).json({ exito: false, mensaje: 'Error al conectar con TikTok.' });
+        const data = await response.json();
 
-        return res.status(400).json({ exito: false, mensaje: 'No se pudo procesar TikTok.' });
+        if (data.code === 0 && data.data) {
+            const videoUrl = data.data.hdplay || data.data.play;
+            const fullTitle = `${data.data.title || 'TikTok_Video'}.mp4`;
+            return res.json({
+                exito: true,
+                videoUrlHD: `/api/download-file?url=${encodeURIComponent(videoUrl)}&filename=${encodeURIComponent(fullTitle)}`,
+                videoUrl: `/api/download-file?url=${encodeURIComponent(data.data.play)}&filename=${encodeURIComponent(fullTitle)}`,
+                titulo: data.data.title || 'TikTok Video'
+            });
+        }
+        return res.status(400).json({ exito: false, mensaje: 'No se encontró el video de TikTok.' });
     } catch (err) {
         return res.status(500).json({ exito: false, mensaje: 'Error al procesar TikTok.' });
     }
 }
 
-// PROCESAR PINTEREST
+// LÓGICA DE PINTEREST
 async function procesarPinterest(url, res) {
     try {
         const response = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
@@ -253,13 +181,13 @@ async function procesarPinterest(url, res) {
             const rawVideoUrl = videoMatch[0].replace(/\\/g, '');
             return res.json({
                 exito: true,
-                videoUrlHD: `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&title=Pinterest_Video`,
-                videoUrl: `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&title=Pinterest_Video`,
+                videoUrlHD: `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&filename=Pinterest_Video.mp4`,
+                videoUrl: `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&filename=Pinterest_Video.mp4`,
                 titulo: 'Pinterest Video'
             });
         }
 
-        return res.status(400).json({ exito: false, mensaje: 'No contiene video descargable.' });
+        return res.status(400).json({ exito: false, mensaje: 'No se encontró video en este enlace.' });
     } catch (err) {
         return res.status(500).json({ exito: false, mensaje: 'Error al procesar Pinterest.' });
     }
