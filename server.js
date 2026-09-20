@@ -41,8 +41,9 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos oficiales y portada HD
+        // 1. Obtener metadatos exactos y portada HD usando Spotify oEmbed
         let trackTitle = 'Canción de Spotify';
+        let artistName = '';
         let coverImage = '';
 
         try {
@@ -50,64 +51,66 @@ async function procesarSpotify(input, res) {
             if (oembedRes.ok) {
                 const oembedData = await oembedRes.json();
                 trackTitle = oembedData.title || trackTitle;
+                artistName = oembedData.author_name || '';
                 coverImage = oembedData.thumbnail_url || '';
             }
         } catch (e) {
-            console.log('Error oembed:', e.message);
+            console.log('Error metadatos Spotify:', e.message);
         }
 
-        // 2. Extraer audio MP3 completo vía API de Cobalt / Spotdl rápida
-        const downloadApiUrl = `https://api.spotifydown.com/download/${trackId}`;
-        const response = await fetch(downloadApiUrl, {
-            headers: {
-                'Origin': 'https://spotifydown.com',
-                'Referer': 'https://spotifydown.com/'
-            }
-        });
+        const searchQuery = `${trackTitle} ${artistName}`.trim();
 
-        if (response.ok) {
-            const data = await response.json();
-            if (data.success && data.link) {
-                return res.json({
-                    exito: true,
-                    titulo: data.metadata ? `${data.metadata.title} - ${data.metadata.artists}` : trackTitle,
-                    coverUrl: data.metadata?.cover || coverImage,
-                    cover: data.metadata?.cover || coverImage,
-                    audioUrl: data.link,
-                    downloadUrl: data.link
+        // 2. Extraer audio MP3 completo usando Cobalt API (Motor estable)
+        const cobaltInstances = [
+            'https://co.wuk.sh/api/json',
+            'https://cobalt.qtfy.dev/api/json',
+            'https://api.cobalt.tools/api/json'
+        ];
+
+        for (const instance of cobaltInstances) {
+            try {
+                const response = await fetch(instance, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        url: `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`,
+                        downloadMode: 'audio',
+                        audioFormat: 'mp3'
+                    })
                 });
-            }
-        }
 
-        // Backup 2: Servidor de respaldo de audio directo
-        const backupApi = await fetch(`https://spotidownloader.com/api/download-track`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: cleanUrl })
-        }).catch(() => null);
-
-        if (backupApi && backupApi.ok) {
-            const backupData = await backupApi.json();
-            if (backupData && backupData.download_url) {
-                return res.json({
-                    exito: true,
-                    titulo: trackTitle,
-                    coverUrl: backupData.cover || coverImage,
-                    cover: backupData.cover || coverImage,
-                    audioUrl: backupData.download_url,
-                    downloadUrl: backupData.download_url
-                });
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data && (data.url || data.picker)) {
+                        const finalDownloadUrl = data.url || (data.picker && data.picker[0] ? data.picker[0].url : null);
+                        if (finalDownloadUrl) {
+                            return res.json({
+                                exito: true,
+                                titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
+                                coverUrl: coverImage,
+                                cover: coverImage,
+                                audioUrl: finalDownloadUrl,
+                                downloadUrl: finalDownloadUrl
+                            });
+                        }
+                    }
+                }
+            } catch (err) {
+                console.log(`Error intentando conectar con ${instance}`);
             }
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el audio. Revisa el enlace e intenta de nuevo.'
+            mensaje: 'No fue posible extraer el audio. Intenta nuevamente.'
         });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error procesando la canción.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la canción.' });
     }
 }
 
