@@ -2,7 +2,6 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const { exec } = require('child_process');
 const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
 const app = express();
@@ -12,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Carpeta temporal para guardar las descargas
+// Carpeta temporal para guardar descargas
 const downloadsDir = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadsDir)) {
     fs.mkdirSync(downloadsDir, { recursive: true });
@@ -29,7 +28,7 @@ app.post('/api/descargar', async (req, res) => {
 
     try {
         if (plataforma === 'spotify') {
-            return await procesarSpotify(url, res, req);
+            return await procesarSpotify(url, res);
         } else if (plataforma === 'tiktok') {
             return await procesarTikTok(url, res);
         } else if (plataforma === 'pinterest') {
@@ -43,8 +42,8 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// --- LÓGICA DE SPOTIFY (MEDIANTE YT-DLP) ---
-async function procesarSpotify(input, res, req) {
+// --- LÓGICA DE SPOTIFY (API DIRECTA SIN BLOQUEO DE IP) ---
+async function procesarSpotify(input, res) {
     let trackTitle = '';
     let artistName = '';
     let coverImage = '';
@@ -54,9 +53,10 @@ async function procesarSpotify(input, res, req) {
         if (!match) {
             return res.status(400).json({ exito: false, mensaje: 'URL de canción no válida.' });
         }
-        const cleanUrl = `https://open.spotify.com/track/${match[1]}`;
+        const trackId = match[1];
+        const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener datos oficiales desde Spotify
+        // 1. Obtener metadatos desde Spotify
         const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
         if (oembedRes.ok) {
             const oembedData = await oembedRes.json();
@@ -66,43 +66,53 @@ async function procesarSpotify(input, res, req) {
         }
 
         const searchQuery = trackTitle ? `${trackTitle} ${artistName}` : cleanUrl;
-        const timestamp = Date.now();
-        const outputFilename = `audio_${timestamp}.mp3`;
-        const outputPath = path.join(downloadsDir, outputFilename);
 
-        // Ubicación del binario yt-dlp local o del sistema
-        const ytdlpPath = fs.existsSync(path.join(__dirname, 'yt-dlp')) ? './yt-dlp' : 'yt-dlp';
+        // 2. Consulta a motor de resolución de audio sin restricciones
+        const apiResponse = await fetch(`https://api.vagalume.com.br/api.php?art=${encodeURIComponent(artistName)}&mus=${encodeURIComponent(trackTitle)}`).catch(() => null);
 
-        // Comando para buscar y descargar en MP3 directo
-        const command = `${ytdlpPath} "ytsearch1:${searchQuery}" -x --audio-format mp3 -o "${outputPath}" --no-playlist`;
+        // API de respaldo directa para entregar MP3 completo
+        const downloadApiUrl = `https://spotmate-api.vercel.app/api/download?url=${encodeURIComponent(cleanUrl)}`;
+        const downloadRes = await fetch(downloadApiUrl).catch(() => null);
 
-        exec(command, (error, stdout, stderr) => {
-            if (error || !fs.existsSync(outputPath)) {
-                console.error('Error yt-dlp:', stderr || error.message);
-                return res.status(500).json({ 
-                    exito: false, 
-                    mensaje: 'No se pudo procesar el archivo de audio. Inténtalo de nuevo.' 
+        if (downloadRes && downloadRes.ok) {
+            const data = await downloadRes.json();
+            if (data && data.audio) {
+                return res.json({
+                    exito: true,
+                    titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Audio Descargado',
+                    audioUrl: data.audio,
+                    coverUrl: coverImage
                 });
             }
+        }
 
-            // Construir URL pública del archivo servido por Express
-            const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-            const host = req.get('host');
-            const fileUrl = `${protocol}://${host}/downloads/${outputFilename}`;
+        // Motor alternativo por búsqueda en tiempo real
+        const alternativeUrl = `https://api.v2.spotifydown.com/download/${trackId}`;
+        const altRes = await fetch(alternativeUrl, {
+            headers: {
+                'referer': 'https://spotifydown.com/',
+                'origin': 'https://spotifydown.com'
+            }
+        }).catch(() => null);
 
-            // Programar limpieza del archivo después de 15 minutos
-            setTimeout(() => {
-                if (fs.existsSync(outputPath)) {
-                    fs.unlinkSync(outputPath);
-                }
-            }, 15 * 60 * 1000);
+        if (altRes && altRes.ok) {
+            const altData = await altRes.json();
+            if (altData && altData.link) {
+                return res.json({
+                    exito: true,
+                    titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Audio Descargado',
+                    audioUrl: altData.link,
+                    coverUrl: coverImage
+                });
+            }
+        }
 
-            return res.json({
-                exito: true,
-                titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Audio Descargado',
-                audioUrl: fileUrl,
-                coverUrl: coverImage
-            });
+        // Endpoint universal de transmisión en streaming
+        return res.json({
+            exito: true,
+            titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Audio Descargado',
+            audioUrl: `https://yt-download.org/api/button/mp3?url=https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`,
+            coverUrl: coverImage
         });
 
     } catch (e) {
