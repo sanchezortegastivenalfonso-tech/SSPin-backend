@@ -11,14 +11,14 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Carpeta temporal para guardar descargas
+// Carpeta temporal para almacenar audios
 const downloadsDir = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadsDir)) {
     fs.mkdirSync(downloadsDir, { recursive: true });
 }
 app.use('/downloads', express.static(downloadsDir));
 
-// --- ENDPOINT PRINCIPAL DE DESCARGA ---
+// --- ENDPOINT PRINCIPAL ---
 app.post('/api/descargar', async (req, res) => {
     const { url, plataforma } = req.body;
 
@@ -28,7 +28,7 @@ app.post('/api/descargar', async (req, res) => {
 
     try {
         if (plataforma === 'spotify') {
-            return await procesarSpotify(url, res);
+            return await procesarSpotify(url, req, res);
         } else if (plataforma === 'tiktok') {
             return await procesarTikTok(url, res);
         } else if (plataforma === 'pinterest') {
@@ -42,82 +42,90 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// --- LÓGICA DE SPOTIFY (API DIRECTA SIN BLOQUEO DE IP) ---
-async function procesarSpotify(input, res) {
-    let trackTitle = '';
-    let artistName = '';
-    let coverImage = '';
-
+// --- LÓGICA DE SPOTIFY (DESCARGA DIRECTA Y PROXY DE ARCHIVO) ---
+async function procesarSpotify(input, req, res) {
     try {
         const match = input.match(/track\/([a-zA-Z0-9]+)/);
         if (!match) {
-            return res.status(400).json({ exito: false, mensaje: 'URL de canción no válida.' });
+            return res.status(400).json({ exito: false, mensaje: 'Enlace de Spotify no válido.' });
         }
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos desde Spotify
-        const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
-        if (oembedRes.ok) {
-            const oembedData = await oembedRes.json();
-            trackTitle = oembedData.title || '';
-            artistName = oembedData.author_name || '';
-            coverImage = oembedData.thumbnail_url || '';
-        }
-
-        const searchQuery = trackTitle ? `${trackTitle} ${artistName}` : cleanUrl;
-
-        // 2. Consulta a motor de resolución de audio sin restricciones
-        const apiResponse = await fetch(`https://api.vagalume.com.br/api.php?art=${encodeURIComponent(artistName)}&mus=${encodeURIComponent(trackTitle)}`).catch(() => null);
-
-        // API de respaldo directa para entregar MP3 completo
-        const downloadApiUrl = `https://spotmate-api.vercel.app/api/download?url=${encodeURIComponent(cleanUrl)}`;
-        const downloadRes = await fetch(downloadApiUrl).catch(() => null);
-
-        if (downloadRes && downloadRes.ok) {
-            const data = await downloadRes.json();
-            if (data && data.audio) {
-                return res.json({
-                    exito: true,
-                    titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Audio Descargado',
-                    audioUrl: data.audio,
-                    coverUrl: coverImage
-                });
+        // 1. Obtener metadatos oficiales de la canción
+        let trackTitle = 'Cancion_Spotify';
+        let coverImage = '';
+        try {
+            const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
+            if (oembedRes.ok) {
+                const oembedData = await oembedRes.json();
+                if (oembedData.title) trackTitle = oembedData.title.replace(/[/\\?%*:|"<>]/g, '');
+                if (oembedData.thumbnail_url) coverImage = oembedData.thumbnail_url;
             }
+        } catch (e) {
+            console.log('Error oEmbed:', e.message);
         }
 
-        // Motor alternativo por búsqueda en tiempo real
-        const alternativeUrl = `https://api.v2.spotifydown.com/download/${trackId}`;
-        const altRes = await fetch(alternativeUrl, {
+        // 2. Pedir la URL directa del MP3 a la API pública de Cobalt
+        const cobaltRes = await fetch('https://api.cobalt.tools/', {
+            method: 'POST',
             headers: {
-                'referer': 'https://spotifydown.com/',
-                'origin': 'https://spotifydown.com'
-            }
-        }).catch(() => null);
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                url: cleanUrl,
+                downloadMode: 'audio',
+                audioFormat: 'mp3'
+            })
+        });
 
-        if (altRes && altRes.ok) {
-            const altData = await altRes.json();
-            if (altData && altData.link) {
-                return res.json({
-                    exito: true,
-                    titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Audio Descargado',
-                    audioUrl: altData.link,
-                    coverUrl: coverImage
-                });
-            }
+        const cobaltData = await cobaltRes.json();
+
+        if (!cobaltRes.ok || !cobaltData.url) {
+            return res.status(400).json({ 
+                exito: false, 
+                mensaje: 'No se pudo procesar la canción de Spotify. Intenta nuevamente.' 
+            });
         }
 
-        // Endpoint universal de transmisión en streaming
+        // 3. DESCARGAR EL ARCHIVO MP3 EN TU PROPIO SERVIDOR
+        // Esto evita que el usuario navegue a otra página o sea redirigido
+        const audioStreamRes = await fetch(cobaltData.url);
+        if (!audioStreamRes.ok) {
+            return res.status(500).json({ exito: false, mensaje: 'Error al transferir el archivo de audio.' });
+        }
+
+        const fileName = `spotify_${Date.now()}.mp3`;
+        const filePath = path.join(downloadsDir, fileName);
+        const fileStream = fs.createWriteStream(filePath);
+
+        await new Promise((resolve, reject) => {
+            audioStreamRes.body.pipe(fileStream);
+            audioStreamRes.body.on('error', reject);
+            fileStream.on('finish', resolve);
+        });
+
+        // 4. Retornar la URL directa alojada en TU servidor Render
+        const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+        const host = req.get('host');
+        const localAudioUrl = `${protocol}://${host}/downloads/${fileName}`;
+
+        // Limpiar archivo del servidor pasados 10 minutos
+        setTimeout(() => {
+            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+        }, 10 * 60 * 1000);
+
         return res.json({
             exito: true,
-            titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Audio Descargado',
-            audioUrl: `https://yt-download.org/api/button/mp3?url=https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`,
+            titulo: trackTitle,
+            audioUrl: localAudioUrl,
             coverUrl: coverImage
         });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la solicitud de Spotify.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al descargar la canción.' });
     }
 }
 
@@ -125,9 +133,7 @@ async function procesarSpotify(input, res) {
 async function procesarTikTok(url, res) {
     try {
         const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`);
-        if (!response.ok) return res.status(400).json({ exito: false, mensaje: 'Error en respuesta de TikTok.' });
         const data = await response.json();
-
         if (data.code === 0 && data.data) {
             return res.json({
                 exito: true,
@@ -145,9 +151,7 @@ async function procesarTikTok(url, res) {
 async function procesarPinterest(url, res) {
     try {
         const response = await fetch(`https://api.pinterestdownloader.com/download?url=${encodeURIComponent(url)}`);
-        if (!response.ok) return res.status(400).json({ exito: false, mensaje: 'Error en respuesta de Pinterest.' });
         const data = await response.json();
-
         if (data && (data.url || data.video_url)) {
             const videoLink = data.video_url || data.url;
             return res.json({
@@ -156,12 +160,10 @@ async function procesarPinterest(url, res) {
                 videoUrl: videoLink
             });
         }
-        return res.status(400).json({ exito: false, mensaje: 'No se encontró contenido descargable en este Pin.' });
+        return res.status(400).json({ exito: false, mensaje: 'No se encontró el contenido de Pinterest.' });
     } catch (err) {
         return res.status(500).json({ exito: false, mensaje: 'Error al procesar Pinterest.' });
     }
 }
 
-app.listen(PORT, () => {
-    console.log(`Servidor activo en puerto ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Servidor escuchando en puerto ${PORT}`));
