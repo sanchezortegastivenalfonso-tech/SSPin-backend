@@ -41,7 +41,7 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos exactos y portada HD usando Spotify oEmbed
+        // 1. Obtener metadatos oficiales y Portada HD vía Spotify oEmbed
         let trackTitle = 'Canción de Spotify';
         let artistName = '';
         let coverImage = '';
@@ -55,57 +55,65 @@ async function procesarSpotify(input, res) {
                 coverImage = oembedData.thumbnail_url || '';
             }
         } catch (e) {
-            console.log('Error metadatos Spotify:', e.message);
+            console.log('Error oembed:', e.message);
         }
 
-        const searchQuery = `${trackTitle} ${artistName}`.trim();
-
-        // 2. Extraer audio MP3 completo usando Cobalt API (Motor estable)
-        const cobaltInstances = [
-            'https://co.wuk.sh/api/json',
-            'https://cobalt.qtfy.dev/api/json',
-            'https://api.cobalt.tools/api/json'
+        // 2. Extraer audio MP3 completo mediante API de descarga directa
+        const spotifyApis = [
+            `https://api.vagalume.com.br/valida_url/?url=${encodeURIComponent(cleanUrl)}`,
+            `https://spotify-downloader-api.vercel.app/api/download?url=${encodeURIComponent(cleanUrl)}`
         ];
 
-        for (const instance of cobaltInstances) {
-            try {
-                const response = await fetch(instance, {
-                    method: 'POST',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        url: `https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`,
-                        downloadMode: 'audio',
-                        audioFormat: 'mp3'
-                    })
-                });
+        // Opción A: Servicio Directo Spotimate / SpotiDown
+        try {
+            const apiRes = await fetch(`https://api.spotidownloader.com/download?url=${encodeURIComponent(cleanUrl)}`, {
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
+            if (apiRes.ok) {
+                const data = await apiRes.json();
+                if (data && data.link) {
+                    return res.json({
+                        exito: true,
+                        titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
+                        coverUrl: coverImage,
+                        cover: coverImage,
+                        audioUrl: data.link,
+                        downloadUrl: data.link
+                    });
+                }
+            }
+        } catch (e) {
+            console.log('Fallo opción A, probando respaldo...');
+        }
 
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data && (data.url || data.picker)) {
-                        const finalDownloadUrl = data.url || (data.picker && data.picker[0] ? data.picker[0].url : null);
-                        if (finalDownloadUrl) {
-                            return res.json({
-                                exito: true,
-                                titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
-                                coverUrl: coverImage,
-                                cover: coverImage,
-                                audioUrl: finalDownloadUrl,
-                                downloadUrl: finalDownloadUrl
-                            });
-                        }
+        // Opción B: Servicio de Respaldo por ID
+        try {
+            const backupRes = await fetch(`https://api.fabdl.com/spotify/get?url=${encodeURIComponent(cleanUrl)}`);
+            if (backupRes.ok) {
+                const bData = await backupRes.json();
+                if (bData.result) {
+                    const convertRes = await fetch(`https://api.fabdl.com/spotify/mp3-convert-task/${bData.result.gid}/${bData.result.id}`);
+                    const convertData = await convertRes.json();
+                    if (convertData.result && convertData.result.download_url) {
+                        const dlLink = `https://api.fabdl.com${convertData.result.download_url}`;
+                        return res.json({
+                            exito: true,
+                            titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
+                            coverUrl: coverImage || bData.result.image,
+                            cover: coverImage || bData.result.image,
+                            audioUrl: dlLink,
+                            downloadUrl: dlLink
+                        });
                     }
                 }
-            } catch (err) {
-                console.log(`Error intentando conectar con ${instance}`);
             }
+        } catch (e) {
+            console.log('Fallo opción B');
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No fue posible extraer el audio. Intenta nuevamente.'
+            mensaje: 'No se pudo obtener el audio. Intenta nuevamente en un momento.'
         });
 
     } catch (e) {
