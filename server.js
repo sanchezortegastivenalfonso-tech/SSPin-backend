@@ -12,6 +12,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
+// Endpoint principal para procesar los enlaces
 app.post('/api/descargar', async (req, res) => {
     const { url, plataforma } = req.body;
 
@@ -32,6 +33,38 @@ app.post('/api/descargar', async (req, res) => {
     } catch (error) {
         console.error('Error general:', error.message);
         return res.status(500).json({ exito: false, mensaje: 'Error interno en el servidor.' });
+    }
+});
+
+// Endpoint proxy para forzar la descarga directa inmediata como archivo adjunto
+app.get('/api/download-file', async (req, res) => {
+    const fileUrl = req.query.url;
+    let fileName = req.query.name || 'cancion.mp3';
+
+    if (!fileUrl) {
+        return res.status(400).send('URL no proporcionada');
+    }
+
+    if (!fileName.endsWith('.mp3')) {
+        fileName += '.mp3';
+    }
+
+    try {
+        const response = await fetch(fileUrl);
+        if (!response.ok) {
+            return res.status(500).send('Error al obtener el archivo fuente');
+        }
+
+        // Encabezados obligatorios para forzar descarga directa en el navegador
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+        res.setHeader('Content-Type', 'audio/mpeg');
+
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        res.send(buffer);
+    } catch (error) {
+        console.error('Error proxy descarga:', error.message);
+        res.status(500).send('Error al procesar la descarga directa');
     }
 });
 
@@ -77,13 +110,17 @@ async function procesarSpotify(input, res) {
                     const audioUrl = rapidData.data?.downloadLink || rapidData.downloadLink || rapidData.url;
                     
                     if (audioUrl) {
+                        const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
+                        // Construimos la URL pasando por nuestro proxy para forzar descarga
+                        const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}`;
+
                         return res.json({
                             exito: true,
-                            titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
+                            titulo: titleCombined,
                             coverUrl: coverImage || rapidData.data?.cover,
                             cover: coverImage || rapidData.data?.cover,
-                            audioUrl: audioUrl,
-                            downloadUrl: audioUrl
+                            audioUrl: directDownloadProxyUrl,
+                            downloadUrl: directDownloadProxyUrl
                         });
                     }
                 }
@@ -103,13 +140,16 @@ async function procesarSpotify(input, res) {
             if (fallbackRes.ok) {
                 const fbData = await fallbackRes.json();
                 if (fbData.success && fbData.link) {
+                    const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
+                    const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(fbData.link)}&name=${encodeURIComponent(titleCombined)}`;
+
                     return res.json({
                         exito: true,
-                        titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
+                        titulo: titleCombined,
                         coverUrl: coverImage,
                         cover: coverImage,
-                        audioUrl: fbData.link,
-                        downloadUrl: fbData.link
+                        audioUrl: directDownloadProxyUrl,
+                        downloadUrl: directDownloadProxyUrl
                     });
                 }
             }
@@ -119,7 +159,7 @@ async function procesarSpotify(input, res) {
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No fue posible obtener el audio. Revisa que la suscripción a la API en RapidAPI esté activa.'
+            mensaje: 'No fue posible obtener el audio. Revisa la suscripción en RapidAPI.'
         });
 
     } catch (e) {
