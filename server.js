@@ -41,7 +41,7 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos oficiales y Portada HD vía Spotify oEmbed
+        // 1. Obtener metadatos oficiales y portada HD desde Spotify
         let trackTitle = 'Canción de Spotify';
         let artistName = '';
         let coverImage = '';
@@ -55,65 +55,57 @@ async function procesarSpotify(input, res) {
                 coverImage = oembedData.thumbnail_url || '';
             }
         } catch (e) {
-            console.log('Error oembed:', e.message);
+            console.log('Error metadatos Spotify:', e.message);
         }
 
-        // 2. Extraer audio MP3 completo mediante API de descarga directa
-        const spotifyApis = [
-            `https://api.vagalume.com.br/valida_url/?url=${encodeURIComponent(cleanUrl)}`,
-            `https://spotify-downloader-api.vercel.app/api/download?url=${encodeURIComponent(cleanUrl)}`
+        const query = `${trackTitle} ${artistName}`.trim();
+
+        // 2. Buscar y extraer audio con instancias Invidious (fallback de alta disponibilidad)
+        const invidiousInstances = [
+            'https://inv.hostux.net',
+            'https://invidious.nerdvpn.de',
+            'https://invidious.drgns.space',
+            'https://vid.puffyan.us'
         ];
 
-        // Opción A: Servicio Directo Spotimate / SpotiDown
-        try {
-            const apiRes = await fetch(`https://api.spotidownloader.com/download?url=${encodeURIComponent(cleanUrl)}`, {
-                headers: { 'User-Agent': 'Mozilla/5.0' }
-            });
-            if (apiRes.ok) {
-                const data = await apiRes.json();
-                if (data && data.link) {
-                    return res.json({
-                        exito: true,
-                        titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
-                        coverUrl: coverImage,
-                        cover: coverImage,
-                        audioUrl: data.link,
-                        downloadUrl: data.link
-                    });
-                }
-            }
-        } catch (e) {
-            console.log('Fallo opción A, probando respaldo...');
-        }
+        for (const instance of invidiousInstances) {
+            try {
+                const searchRes = await fetch(`${instance}/api/v1/search?q=${encodeURIComponent(query)}&type=video`);
+                if (searchRes.ok) {
+                    const searchData = await searchRes.json();
+                    if (searchData && searchData.length > 0) {
+                        const videoId = searchData[0].videoId;
+                        const videoRes = await fetch(`${instance}/api/v1/videos/${videoId}`);
+                        if (videoRes.ok) {
+                            const videoData = await videoRes.json();
+                            const audioStreams = videoData.adaptiveFormats ? 
+                                videoData.adaptiveFormats.filter(f => f.type && f.type.startsWith('audio/')) : [];
+                            
+                            if (audioStreams.length > 0) {
+                                // Seleccionar la mejor calidad de audio
+                                audioStreams.sort((a, b) => (parseInt(b.bitrate) || 0) - (parseInt(a.bitrate) || 0));
+                                const audioUrl = audioStreams[0].url;
 
-        // Opción B: Servicio de Respaldo por ID
-        try {
-            const backupRes = await fetch(`https://api.fabdl.com/spotify/get?url=${encodeURIComponent(cleanUrl)}`);
-            if (backupRes.ok) {
-                const bData = await backupRes.json();
-                if (bData.result) {
-                    const convertRes = await fetch(`https://api.fabdl.com/spotify/mp3-convert-task/${bData.result.gid}/${bData.result.id}`);
-                    const convertData = await convertRes.json();
-                    if (convertData.result && convertData.result.download_url) {
-                        const dlLink = `https://api.fabdl.com${convertData.result.download_url}`;
-                        return res.json({
-                            exito: true,
-                            titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
-                            coverUrl: coverImage || bData.result.image,
-                            cover: coverImage || bData.result.image,
-                            audioUrl: dlLink,
-                            downloadUrl: dlLink
-                        });
+                                return res.json({
+                                    exito: true,
+                                    titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
+                                    coverUrl: coverImage,
+                                    cover: coverImage,
+                                    audioUrl: audioUrl,
+                                    downloadUrl: audioUrl
+                                });
+                            }
+                        }
                     }
                 }
+            } catch (err) {
+                console.log(`Fallo en instancia ${instance}, intentando siguiente...`);
             }
-        } catch (e) {
-            console.log('Fallo opción B');
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el audio. Intenta nuevamente en un momento.'
+            mensaje: 'No fue posible procesar la canción en este momento. Revisa la URL e intenta nuevamente.'
         });
 
     } catch (e) {
