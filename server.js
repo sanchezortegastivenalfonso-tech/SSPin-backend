@@ -13,7 +13,7 @@ app.post('/api/descargar', async (req, res) => {
     const { url, plataforma } = req.body;
 
     if (!url) {
-        return res.status(400).json({ exito: false, mensaje: 'Debes proporcionar un enlace.' });
+        return res.status(400).json({ exito: false, mensaje: 'Debes proporcionar un enlace válido.' });
     }
 
     try {
@@ -41,9 +41,8 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos oficiales y Portada HD desde Spotify (oEmbed)
+        // 1. Obtener metadatos oficiales y portada HD
         let trackTitle = 'Canción de Spotify';
-        let artistName = '';
         let coverImage = '';
 
         try {
@@ -51,62 +50,64 @@ async function procesarSpotify(input, res) {
             if (oembedRes.ok) {
                 const oembedData = await oembedRes.json();
                 trackTitle = oembedData.title || trackTitle;
-                artistName = oembedData.author_name || '';
                 coverImage = oembedData.thumbnail_url || '';
             }
         } catch (e) {
-            console.log('Error metadatos Spotify:', e.message);
+            console.log('Error oembed:', e.message);
         }
 
-        const searchQuery = `${trackTitle} ${artistName}`.trim();
+        // 2. Extraer audio MP3 completo vía API de Cobalt / Spotdl rápida
+        const downloadApiUrl = `https://api.spotifydown.com/download/${trackId}`;
+        const response = await fetch(downloadApiUrl, {
+            headers: {
+                'Origin': 'https://spotifydown.com',
+                'Referer': 'https://spotifydown.com/'
+            }
+        });
 
-        // 2. Extraer audio MP3 completo mediante Piped API (Servidor alternativo de YouTube)
-        const pipedInstances = [
-            'https://pipedapi.kavin.rocks',
-            'https://api.piped.private.coffee',
-            'https://pipedapi.mha.fi'
-        ];
+        if (response.ok) {
+            const data = await response.json();
+            if (data.success && data.link) {
+                return res.json({
+                    exito: true,
+                    titulo: data.metadata ? `${data.metadata.title} - ${data.metadata.artists}` : trackTitle,
+                    coverUrl: data.metadata?.cover || coverImage,
+                    cover: data.metadata?.cover || coverImage,
+                    audioUrl: data.link,
+                    downloadUrl: data.link
+                });
+            }
+        }
 
-        for (const instance of pipedInstances) {
-            try {
-                const searchRes = await fetch(`${instance}/search?q=${encodeURIComponent(searchQuery)}&filter=music_songs`);
-                if (searchRes.ok) {
-                    const searchData = await searchRes.json();
-                    if (searchData.items && searchData.items.length > 0) {
-                        const videoId = searchData.items[0].url.split('v=')[1];
-                        const streamRes = await fetch(`${instance}/streams/${videoId}`);
-                        if (streamRes.ok) {
-                            const streamData = await streamRes.json();
-                            // Filtrar por stream de solo audio
-                            const audioStreams = streamData.audioStreams || [];
-                            if (audioStreams.length > 0) {
-                                // Seleccionar la mejor calidad de audio disponible
-                                const bestAudio = audioStreams.sort((a, b) => b.bitrate - a.bitrate)[0];
-                                return res.json({
-                                    exito: true,
-                                    titulo: `${trackTitle} - ${artistName}`,
-                                    coverUrl: coverImage,
-                                    cover: coverImage,
-                                    audioUrl: bestAudio.url,
-                                    downloadUrl: bestAudio.url
-                                });
-                            }
-                        }
-                    }
-                }
-            } catch (err) {
-                console.log(`Fallo en instancia ${instance}, probando la siguiente...`);
+        // Backup 2: Servidor de respaldo de audio directo
+        const backupApi = await fetch(`https://spotidownloader.com/api/download-track`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: cleanUrl })
+        }).catch(() => null);
+
+        if (backupApi && backupApi.ok) {
+            const backupData = await backupApi.json();
+            if (backupData && backupData.download_url) {
+                return res.json({
+                    exito: true,
+                    titulo: trackTitle,
+                    coverUrl: backupData.cover || coverImage,
+                    cover: backupData.cover || coverImage,
+                    audioUrl: backupData.download_url,
+                    downloadUrl: backupData.download_url
+                });
             }
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el audio completo. Intenta de nuevo.'
+            mensaje: 'No se pudo obtener el audio. Revisa el enlace e intenta de nuevo.'
         });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno procesando Spotify.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error procesando la canción.' });
     }
 }
 
