@@ -11,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Carpeta temporal para guardar las descargas
+// Carpeta temporal para guardar descargas
 const downloadsDir = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadsDir)) {
     fs.mkdirSync(downloadsDir);
@@ -42,7 +42,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// --- LÓGICA DE SPOTIFY (API DIRECTA SIN DEPENDER DE YT-DLP) ---
+// --- LÓGICA DE SPOTIFY (CANCIÓN COMPLETA) ---
 async function procesarSpotify(input, res) {
     let trackTitle = '';
     let artistName = '';
@@ -55,7 +55,7 @@ async function procesarSpotify(input, res) {
         }
         const cleanUrl = `https://open.spotify.com/track/${match[1]}`;
 
-        // 1. Obtener metadatos oficiales desde Spotify
+        // 1. Obtener metadatos desde Spotify
         const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
         if (oembedRes.ok) {
             const oembedData = await oembedRes.json();
@@ -68,50 +68,53 @@ async function procesarSpotify(input, res) {
             return res.status(400).json({ exito: false, mensaje: 'No se pudo leer la información de la canción.' });
         }
 
-        // 2. Extraer el enlace directo MP3 vía API de conversión
-        const downloadApiUrl = `https://api.fabdl.com/spotify/get?url=${encodeURIComponent(cleanUrl)}`;
-        const apiRes = await fetch(downloadApiUrl);
-        const apiData = await apiRes.json();
+        const searchQuery = `${trackTitle} ${artistName}`;
 
-        if (apiData && apiData.result) {
-            const gid = apiData.result.gid;
-            const id = apiData.result.id;
-
-            // Iniciar tarea de conversión
-            const convertUrl = `https://api.fabdl.com/spotify/mp3-convert-task/${gid}/${id}`;
-            const convertRes = await fetch(convertUrl);
-            const convertData = await convertRes.json();
-
-            if (convertData && convertData.result && convertData.result.download_url) {
-                const finalAudioUrl = `https://api.fabdl.com${convertData.result.download_url}`;
-
+        // 2. Extractor principal de canción completa MP3
+        const spottyRes = await fetch(`https://spottydl.xyz/api/download?url=${encodeURIComponent(cleanUrl)}`);
+        if (spottyRes.ok) {
+            const spottyData = await spottyRes.json();
+            if (spottyData && (spottyData.link || spottyData.url)) {
                 return res.json({
                     exito: true,
                     titulo: `${trackTitle} - ${artistName}`,
-                    audioUrl: finalAudioUrl,
+                    audioUrl: spottyData.link || spottyData.url,
                     coverUrl: coverImage
                 });
             }
         }
 
-        // Respaldo vía iTunes si la API principal no devuelve archivo directo
-        const searchRes = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(trackTitle + ' ' + artistName)}&entity=song&limit=1`);
-        const searchData = await searchRes.json();
+        // 3. Extractor de respaldo para canciones completas (vía YouTube Audio API)
+        const ytAudioRes = await fetch(`https://api.cobalt.tools/api/json`, {
+            method: 'POST',
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                url: cleanUrl,
+                downloadMode: 'audio',
+                audioFormat: 'mp3'
+            })
+        });
 
-        if (searchData.results && searchData.results.length > 0) {
-            return res.json({
-                exito: true,
-                titulo: `${trackTitle} - ${artistName}`,
-                audioUrl: searchData.results[0].previewUrl,
-                coverUrl: coverImage
-            });
+        if (ytAudioRes.ok) {
+            const ytAudioData = await ytAudioRes.json();
+            if (ytAudioData && ytAudioData.url) {
+                return res.json({
+                    exito: true,
+                    titulo: `${trackTitle} - ${artistName}`,
+                    audioUrl: ytAudioData.url,
+                    coverUrl: coverImage
+                });
+            }
         }
 
-        return res.status(400).json({ exito: false, mensaje: 'No se pudo obtener el enlace de descarga del audio.' });
+        return res.status(400).json({ exito: false, mensaje: 'No se pudo obtener el audio completo de la canción.' });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el audio de Spotify.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el audio completo.' });
     }
 }
 
