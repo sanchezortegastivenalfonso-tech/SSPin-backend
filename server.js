@@ -42,7 +42,14 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// --- LÓGICA DE SPOTIFY (CANCIÓN COMPLETA VÍA COBALT API) ---
+// Lista de instancias activas de Cobalt
+const INSTANCIAS_COBALT = [
+    'https://api.cobalt.tools',
+    'https://cobalt-api.kwiatek.xyz',
+    'https://cobalt.qzz.io'
+];
+
+// --- LÓGICA DE SPOTIFY (SISTEMA MULTI-INSTANCIA ROBUSTO) ---
 async function procesarSpotify(input, res) {
     let trackTitle = '';
     let artistName = '';
@@ -56,42 +63,56 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener datos e imagen desde Spotify
-        const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
-        if (oembedRes.ok) {
-            const oembedData = await oembedRes.json();
-            trackTitle = oembedData.title || '';
-            artistName = oembedData.author_name || '';
-            coverImage = oembedData.thumbnail_url || '';
+        // 1. Obtener carátula y metadatos oficiales de Spotify
+        try {
+            const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
+            if (oembedRes.ok) {
+                const oembedData = await oembedRes.json();
+                trackTitle = oembedData.title || '';
+                artistName = oembedData.author_name || '';
+                coverImage = oembedData.thumbnail_url || '';
+            }
+        } catch (e) {
+            console.log('Error obteniendo metadata oEmbed:', e.message);
         }
 
-        // 2. Extraer archivo de audio MP3 completo directamente usando la API de Cobalt
-        const cobaltRes = await fetch('https://co.wuk.sh/api/json', {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                url: cleanUrl,
-                downloadMode: 'audio',
-                audioFormat: 'mp3'
-            })
-        });
-
-        if (cobaltRes.ok) {
-            const cobaltData = await cobaltRes.json();
-            if (cobaltData && cobaltData.url) {
-                return res.json({
-                    exito: true,
-                    titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Canción de Spotify',
-                    audioUrl: cobaltData.url,
-                    coverUrl: coverImage
+        // 2. Intentar la descarga iterando por las instancias activas
+        for (const apiBase of INSTANCIAS_COBALT) {
+            try {
+                const response = await fetch(`${apiBase}/`, {
+                    method: 'POST',
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'Mozilla/5.0'
+                    },
+                    body: JSON.stringify({
+                        url: cleanUrl,
+                        downloadMode: 'audio',
+                        audioFormat: 'mp3'
+                    })
                 });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data && (data.url || data.picker)) {
+                        const finalDownloadUrl = data.url || (data.picker && data.picker[0] ? data.picker[0].url : null);
+                        if (finalDownloadUrl) {
+                            return res.json({
+                                exito: true,
+                                titulo: trackTitle ? `${trackTitle} - ${artistName}` : 'Canción de Spotify',
+                                audioUrl: finalDownloadUrl,
+                                coverUrl: coverImage
+                            });
+                        }
+                    }
+                }
+            } catch (err) {
+                console.log(`Falló instancia ${apiBase}:`, err.message);
             }
         }
 
-        return res.status(400).json({ exito: false, mensaje: 'No se pudo generar el enlace directo en MP3.' });
+        return res.status(400).json({ exito: false, mensaje: 'No se pudo generar el enlace MP3. Intenta de nuevo en unos segundos.' });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
