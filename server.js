@@ -5,6 +5,9 @@ const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// REEMPLAZA ESTE TEXTO CON TU CLAVE GRATUITA DE RAPIDAPI
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || 'TU_CLAVE_RAPIDAPI_AQUI';
+
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
@@ -41,7 +44,7 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos oficiales y portada HD
+        // 1. Obtener metadatos oficiales y portada mediante oEmbed público
         let trackTitle = 'Canción de Spotify';
         let artistName = '';
         let coverImage = '';
@@ -58,52 +61,63 @@ async function procesarSpotify(input, res) {
             console.log('Error oembed:', e.message);
         }
 
-        const query = `${trackTitle} ${artistName}`.trim();
+        // 2. Extracción mediante RapidAPI (Evita bloqueos de IP en Render)
+        if (RAPIDAPI_KEY && RAPIDAPI_KEY !== '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038';) {
+            try {
+                const rapidRes = await fetch(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${trackId}`, {
+                    method: 'GET',
+                    headers: {
+                        'x-rapidapi-key': RAPIDAPI_KEY,
+                        'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
+                    }
+                });
 
-        // 2. Extraer enlace MP3 usando APIs rápidas con fallback
-        // Opción 1: API de SpotMate
-        try {
-            const spotRes = await fetch(`https://spotmate.online/api/download?url=${encodeURIComponent(cleanUrl)}`);
-            if (spotRes.ok) {
-                const spotData = await spotRes.json();
-                if (spotData && spotData.url) {
-                    return res.json({
-                        exito: true,
-                        titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
-                        coverUrl: coverImage,
-                        cover: coverImage,
-                        audioUrl: spotData.url,
-                        downloadUrl: spotData.url
-                    });
+                if (rapidRes.ok) {
+                    const rapidData = await rapidRes.json();
+                    if (rapidData && rapidData.data && rapidData.data.downloadLink) {
+                        return res.json({
+                            exito: true,
+                            titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
+                            coverUrl: coverImage || rapidData.data.cover,
+                            cover: coverImage || rapidData.data.cover,
+                            audioUrl: rapidData.data.downloadLink,
+                            downloadUrl: rapidData.data.downloadLink
+                        });
+                    }
                 }
+            } catch (err) {
+                console.log('Error RapidAPI:', err.message);
             }
-        } catch (e) {
-            console.log('Fallo Spotmate');
         }
 
-        // Opción 2: Motor YTMP3 público de respaldo
+        // Respaldo por CDN directo
         try {
-            const ytSearchRes = await fetch(`https://api.vytmp3.com/api/search?q=${encodeURIComponent(query)}`);
-            if (ytSearchRes.ok) {
-                const ytData = await ytSearchRes.json();
-                if (ytData && ytData.length > 0 && ytData[0].url) {
+            const fallbackRes = await fetch(`https://api.spotifydown.com/download/${trackId}`, {
+                headers: {
+                    'Origin': 'https://spotifydown.com',
+                    'Referer': 'https://spotifydown.com/'
+                }
+            });
+            if (fallbackRes.ok) {
+                const fbData = await fallbackRes.json();
+                if (fbData.success && fbData.link) {
                     return res.json({
                         exito: true,
                         titulo: artistName ? `${trackTitle} - ${artistName}` : trackTitle,
                         coverUrl: coverImage,
                         cover: coverImage,
-                        audioUrl: ytData[0].url,
-                        downloadUrl: ytData[0].url
+                        audioUrl: fbData.link,
+                        downloadUrl: fbData.link
                     });
                 }
             }
         } catch (e) {
-            console.log('Fallo Vytmp3');
+            console.log('Error CDN Respaldo');
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No fue posible extraer el audio. Intenta nuevamente.'
+            mensaje: 'No se pudo obtener el audio de Spotify. Configura tu API Key de RapidAPI.'
         });
 
     } catch (e) {
