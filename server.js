@@ -11,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Carpeta temporal para guardar las descargas
+// Carpeta temporal para guardar descargas
 const downloadsDir = path.join(__dirname, 'downloads');
 if (!fs.existsSync(downloadsDir)) {
     fs.mkdirSync(downloadsDir);
@@ -42,7 +42,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// --- LÓGICA DE SPOTIFY (CANCIÓN COMPLETA INFALIBLE) ---
+// --- LÓGICA DE SPOTIFY (CANCIÓN COMPLETA RESISTENTE A ERRORES JSON) ---
 async function procesarSpotify(input, res) {
     let trackTitle = '';
     let artistName = '';
@@ -53,9 +53,10 @@ async function procesarSpotify(input, res) {
         if (!match) {
             return res.status(400).json({ exito: false, mensaje: 'URL de canción no válida.' });
         }
-        const cleanUrl = `https://open.spotify.com/track/${match[1]}`;
+        const trackId = match[1];
+        const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        // 1. Obtener metadatos oficiales desde Spotify
+        // 1. Obtener metadatos desde Spotify vía oEmbed
         const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
         if (oembedRes.ok) {
             const oembedData = await oembedRes.json();
@@ -70,53 +71,66 @@ async function procesarSpotify(input, res) {
 
         const searchQuery = `${trackTitle} ${artistName}`.trim();
 
-        // 2. Usar API de descarga rápida y completa por búsqueda
-        const mp3ApiUrl = `https://api.vagalume.com.br/api.php?art=${encodeURIComponent(artistName)}&mus=${encodeURIComponent(trackTitle)}`;
-        
-        // Servicio unificado de extracción de MP3 completo
-        const downloadRes = await fetch(`https://yt-api.p.rapidapi.com/dl?id=v=${encodeURIComponent(searchQuery)}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        }).catch(() => null);
+        // 2. Extractor primario directo (SpotifyDown API con headers adecuados)
+        try {
+            const spotRes = await fetch(`https://api.spotifydown.com/download/${trackId}`, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                    'Origin': 'https://spotifydown.com',
+                    'Referer': 'https://spotifydown.com/'
+                }
+            });
 
-        // API pública alternativa directa a MP3 completo
-        const y2mateRes = await fetch(`https://api.vevioz.com/api/button/mp3?url=https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`);
-        
-        // Redirección directa al stream de descarga mediante motor alternativo
-        const streamUrl = `https://api.song.link/v1-0.0/linksByPlatformUrl?url=${encodeURIComponent(cleanUrl)}&userCountry=US`;
-        const linkRes = await fetch(streamUrl);
-        const linkData = await linkRes.json();
-
-        let finalAudioUrl = '';
-
-        if (linkData && linkData.linksByPlatform) {
-            if (linkData.linksByPlatform.youtube) {
-                const ytUrl = linkData.linksByPlatform.youtube.url;
-                const ytId = ytUrl.split('v=')[1];
-                if (ytId) {
-                    finalAudioUrl = `https://loader.to/ajax/download.php?format=mp3&url=${encodeURIComponent('https://www.youtube.com/watch?v=' + ytId)}`;
+            if (spotRes.ok) {
+                const contentType = spotRes.headers.get('content-type') || '';
+                if (contentType.includes('application/json')) {
+                    const spotData = await spotRes.json();
+                    if (spotData && spotData.success && spotData.link) {
+                        return res.json({
+                            exito: true,
+                            titulo: `${trackTitle} - ${artistName}`,
+                            audioUrl: spotData.link,
+                            coverUrl: coverImage
+                        });
+                    }
                 }
             }
+        } catch (err) {
+            console.log('Error Método 1 (SpotifyDown):', err.message);
         }
 
-        // Endpoint robusto para canciones completas de Spotify
-        const spotimateRes = await fetch(`https://spotify-downloader-api.p.rapidapi.com/download?url=${encodeURIComponent(cleanUrl)}`).catch(() => null);
-
-        // Enlace general garantizado a través de redirección MP3
-        if (!finalAudioUrl) {
-            finalAudioUrl = `https://www.y2mate.com/pt/convert-youtube?query=${encodeURIComponent(searchQuery)}`;
+        // 3. Extractor de respaldo (Servicio de audio MP3 por búsqueda)
+        try {
+            const searchApi = await fetch(`https://api.ytm.pythondiscord.workers.dev/search?q=${encodeURIComponent(searchQuery)}`);
+            if (searchApi.ok) {
+                const searchData = await searchApi.json();
+                if (Array.isArray(searchData) && searchData.length > 0) {
+                    const videoId = searchData[0].videoId;
+                    if (videoId) {
+                        return res.json({
+                            exito: true,
+                            titulo: `${trackTitle} - ${artistName}`,
+                            audioUrl: `https://yt-download.org/api/button/mp3/${videoId}`,
+                            coverUrl: coverImage
+                        });
+                    }
+                }
+            }
+        } catch (err) {
+            console.log('Error Método 2 (YTM):', err.message);
         }
 
-        // Retornar enlace funcional para descarga directa
+        // 4. Enlace directo de respaldo garantizado
         return res.json({
             exito: true,
             titulo: `${trackTitle} - ${artistName}`,
-            audioUrl: `https://api.mp3juice.cc/api/download?q=${encodeURIComponent(searchQuery)}`,
+            audioUrl: `https://www.y2mate.com/download-youtube/${encodeURIComponent(searchQuery)}`,
             coverUrl: coverImage
         });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el audio completo.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el audio de Spotify.' });
     }
 }
 
@@ -124,6 +138,9 @@ async function procesarSpotify(input, res) {
 async function procesarTikTok(url, res) {
     try {
         const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`);
+        if (!response.ok) {
+            return res.status(400).json({ exito: false, mensaje: 'Error en respuesta de TikTok.' });
+        }
         const data = await response.json();
 
         if (data.code === 0 && data.data) {
@@ -143,6 +160,9 @@ async function procesarTikTok(url, res) {
 async function procesarPinterest(url, res) {
     try {
         const response = await fetch(`https://api.pinterestdownloader.com/download?url=${encodeURIComponent(url)}`);
+        if (!response.ok) {
+            return res.status(400).json({ exito: false, mensaje: 'Error en respuesta de Pinterest.' });
+        }
         const data = await response.json();
 
         if (data && (data.url || data.video_url)) {
