@@ -170,7 +170,7 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// FUNCIÓN PARA RESOVELER ENLACES TIKTOK
+// FUNCIÓN PARA RESOLVER ENLACES TIKTOK
 // ==========================================
 async function resolverUrlCortaTikTok(shortUrl) {
     try {
@@ -188,30 +188,22 @@ async function resolverUrlCortaTikTok(shortUrl) {
 }
 
 // ==========================================
-// 2. PROCESAR TIKTOK (VERSIÓN OPTIMIZADA Y LIMPIA)
+// 2. PROCESAR TIKTOK (API LOVETIK - ALTA COMPATIBILIDAD)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
         let cleanUrl = inputUrl.trim();
 
-        // 1. Resolver enlace si es acortado
         if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
             cleanUrl = await resolverUrlCortaTikTok(cleanUrl);
         }
 
-        // 2. Limpiar parámetros sobrantes de rastreo (?r=1&t=...)
         cleanUrl = cleanUrl.split('?')[0];
-        console.log('URL TikTok Limpia procesada:', cleanUrl);
 
-        // 3. Petición POST a TikWM
         const params = new URLSearchParams();
-        params.append('url', cleanUrl);
-        params.append('count', '12');
-        params.append('cursor', '0');
-        params.append('web', '1');
-        params.append('hd', '1');
+        params.append('query', cleanUrl);
 
-        const response = await fetch('https://www.tikwm.com/api/', {
+        const response = await fetch('https://lovetik.com/api/ajax/search', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
@@ -223,17 +215,11 @@ async function procesarTikTok(inputUrl, res) {
         if (response.ok) {
             const data = await response.json();
 
-            if (data && data.data) {
-                let rawVideoUrl = data.data.hdplay || data.data.play;
-                
-                // Asegurar protocolo completo
-                if (rawVideoUrl && rawVideoUrl.startsWith('//')) {
-                    rawVideoUrl = 'https:' + rawVideoUrl;
-                } else if (rawVideoUrl && !rawVideoUrl.startsWith('http')) {
-                    rawVideoUrl = 'https://www.tikwm.com' + rawVideoUrl;
-                }
-
-                const videoTitle = data.data.title || 'TikTok_Video';
+            if (data && data.status === 'ok' && data.links) {
+                // Selecciona el primer enlace de video disponible (sin marca de agua)
+                const videoOption = data.links.find(l => l.ft === '1') || data.links[0];
+                const rawVideoUrl = videoOption ? videoOption.a : null;
+                const videoTitle = data.desc || 'TikTok_Video';
 
                 if (rawVideoUrl) {
                     const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(videoTitle)}.mp4`;
@@ -250,7 +236,7 @@ async function procesarTikTok(inputUrl, res) {
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el video de TikTok. Inténtalo de nuevo.'
+            mensaje: 'No se pudo obtener el video de TikTok.'
         });
 
     } catch (err) {
