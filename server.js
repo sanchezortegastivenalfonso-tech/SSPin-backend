@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
-const { Tiktok } = require('@tobyg74/tiktok-api-dl');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -168,52 +167,29 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (MULTI-FALLBACK ESTABLE)
+// 2. LÓGICA TIKTOK (MÉTODO NATIVO DIRECTO)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     let cleanUrl = inputUrl.trim();
 
-    // Intento 1: Vía Librería TikTok Downloader
     try {
-        const result = await Tiktok(cleanUrl, { version: 'v2' });
-        if (result && result.status === 'success' && result.result) {
-            const videoData = result.result;
-            const rawVideoUrl = videoData.video1 || videoData.video2 || videoData.video_hd;
-            const title = videoData.desc || 'TikTok_Video';
-
-            if (rawVideoUrl) {
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: title
-                });
-            }
-        }
-    } catch (e1) {
-        console.log('Falló librería Tiktok-DL:', e1.message);
-    }
-
-    // Intento 2: API pública LoveTik
-    try {
-        const formData = new URLSearchParams();
-        formData.append('query', cleanUrl);
-
-        const lovetikRes = await axios.post('https://lovetik.com/api/ajax/search', formData, {
+        const tikwmRes = await axios({
+            method: 'post',
+            url: 'https://www.tikwm.com/api/',
             headers: {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             },
-            timeout: 8000
+            data: `url=${encodeURIComponent(cleanUrl)}&hd=1`
         });
 
-        if (lovetikRes.data && lovetikRes.data.links) {
-            const links = lovetikRes.data.links;
-            const rawVideoUrl = links[0]?.a || links[1]?.a;
-            const title = lovetikRes.data.desc || 'TikTok_Video';
+        if (tikwmRes.data && tikwmRes.data.code === 0) {
+            const videoData = tikwmRes.data.data;
+            const rawVideoUrl = videoData.play || videoData.hdplay;
+            const title = videoData.title || 'TikTok_Video';
 
             if (rawVideoUrl) {
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent('https://www.tikwm.com' + rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
                 return res.json({
                     exito: true,
                     videoUrlHD: proxyUrl,
@@ -222,13 +198,13 @@ async function procesarTikTok(inputUrl, res) {
                 });
             }
         }
-    } catch (e2) {
-        console.log('Falló LoveTik:', e2.message);
+    } catch (e) {
+        console.log('Error TikWM:', e.message);
     }
 
     return res.status(400).json({
         exito: false,
-        mensaje: 'No se pudo obtener el video de TikTok. Intenta con otra URL.'
+        mensaje: 'No se pudo procesar el enlace de TikTok.'
     });
 }
 
