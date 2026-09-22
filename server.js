@@ -29,18 +29,19 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Función para resolver redirecciones (vt.tiktok.com -> tiktok.com/@user/video/...)
+// Resolver redirecciones cortas (vt.tiktok.com)
 async function unshortenUrl(shortUrl) {
     try {
         const res = await fetch(shortUrl, {
             method: 'GET',
             redirect: 'follow',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36'
             }
         });
         return res.url || shortUrl;
     } catch (e) {
+        console.log('Error expandiendo URL:', e.message);
         return shortUrl;
     }
 }
@@ -71,7 +72,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// Proxy para forzar descarga directa en el navegador
+// Proxy de descarga
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
     let fileName = req.query.name || 'archivo_media';
@@ -172,66 +173,48 @@ async function procesarSpotify(input, res) {
                     }
                 }
             } catch (err) {
-                console.log(`Intento con Key [${i + 1}] falló:`, err.message);
+                console.log(`Intento Spotify Key [${i + 1}] falló:`, err.message);
             }
-        }
-
-        try {
-            const fallbackRes = await fetch(`https://api.spotifydown.com/download/${trackId}`, {
-                headers: {
-                    'Origin': 'https://spotifydown.com',
-                    'Referer': 'https://spotifydown.com/'
-                }
-            });
-            if (fallbackRes.ok) {
-                const fbData = await fallbackRes.json();
-                if (fbData.success && fbData.link) {
-                    const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(fbData.link)}&name=${encodeURIComponent(titleCombined)}.mp3`;
-
-                    return res.json({
-                        exito: true,
-                        titulo: titleCombined,
-                        coverUrl: coverImage,
-                        audioUrl: directDownloadProxyUrl
-                    });
-                }
-            }
-        } catch (e) {
-            console.log('Error en CDN de respaldo de Spotify');
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'Se ha alcanzado el límite diario de descargas de Spotify. Por favor, reintenta mañana.'
+            mensaje: 'Límite de descargas de Spotify alcanzado temporalmente.'
         });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la canción de Spotify.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar Spotify.' });
     }
 }
 
 // ==========================================
-// 2. PROCESAR TIKTOK (Soporte nativo para vt.tiktok.com)
+// 2. PROCESAR TIKTOK (Optimizada para Servidores Cloud)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        // Expandir URL corta si viene como vt.tiktok.com o vm.tiktok.com
         const resolvedUrl = await unshortenUrl(inputUrl);
 
-        // Intento 1: API Directa de TikWM con URL Resuelta
+        // Método 1: API Directa en Formato Form-Data con User-Agent Móvil Real
         try {
-            const tikwmRes = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(resolvedUrl)}&hd=1`, {
+            const bodyData = new URLSearchParams();
+            bodyData.append('url', resolvedUrl);
+            bodyData.append('hd', '1');
+
+            const tikwmRes = await fetch('https://www.tikwm.com/api/', {
+                method: 'POST',
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                }
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': 'TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet'
+                },
+                body: bodyData
             });
 
             if (tikwmRes.ok) {
                 const data = await tikwmRes.json();
                 if (data.code === 0 && data.data) {
-                    const playUrl = data.data.hdplay || data.data.play;
-                    const finalVideoUrl = playUrl.startsWith('http') ? playUrl : `https://www.tikwm.com${playUrl}`;
+                    const videoLink = data.data.hdplay || data.data.play;
+                    const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
                     const proxyUrl = `/api/download-file?url=${encodeURIComponent(finalVideoUrl)}&name=TikTok_Video.mp4`;
 
                     return res.json({
@@ -243,66 +226,67 @@ async function procesarTikTok(inputUrl, res) {
                 }
             }
         } catch (e) {
-            console.log('Error en intento 1 TikWM');
+            console.log('Error Método 1 TikTok:', e.message);
         }
 
-        // Intento 2: API de Tiklydown
+        // Método 2: API de Loli
         try {
-            const tiklyRes = await fetch(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(resolvedUrl)}`);
-            if (tiklyRes.ok) {
-                const tiklyData = await tiklyRes.json();
-                const videoUrl = tiklyData.video?.noWatermark || tiklyData.video?.watermark;
-
-                if (videoUrl) {
+            const loliRes = await fetch(`https://api.lolihuman.xyz/api/tiktok?apikey=9b257262ed075388c1b960a0&url=${encodeURIComponent(resolvedUrl)}`);
+            if (loliRes.ok) {
+                const loliData = await loliRes.json();
+                if (loliData.status === 200 && loliData.result) {
+                    const videoUrl = loliData.result.link || loliData.result.no_watermark;
                     const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
+
                     return res.json({
                         exito: true,
                         videoUrlHD: proxyUrl,
                         videoUrl: proxyUrl,
-                        titulo: tiklyData.title || 'TikTok Video'
+                        titulo: loliData.result.title || 'TikTok Video'
                     });
                 }
             }
         } catch (e) {
-            console.log('Error en intento 2 Tiklydown');
+            console.log('Error Método 2 TikTok:', e.message);
         }
 
-        // Intento 3: SSSTik Scraping
-        try {
-            const ssstikRes = await fetch('https://ssstik.io/abc?url=dl', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                },
-                body: new URLSearchParams({ id: resolvedUrl, locale: 'es', tt: '0' })
-            });
+        // Método 3: API RapidAPI con tus Claves Existentes
+        for (let i = 0; i < API_KEYS.length; i++) {
+            const key = getNextApiKey();
+            try {
+                const rapidTikTokRes = await fetch(`https://tiktok-downloader-download-tiktok-videos-without-watermark.p.rapidapi.com/index?url=${encodeURIComponent(resolvedUrl)}`, {
+                    headers: {
+                        'x-rapidapi-key': key,
+                        'x-rapidapi-host': 'tiktok-downloader-download-tiktok-videos-without-watermark.p.rapidapi.com'
+                    }
+                });
 
-            if (ssstikRes.ok) {
-                const html = await ssstikRes.text();
-                const linkMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*download_link/i) || html.match(/href="(https:\/\/[^"]+)"/i);
-                if (linkMatch && linkMatch[1]) {
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(linkMatch[1])}&name=TikTok_Video.mp4`;
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: 'TikTok Video'
-                    });
+                if (rapidTikTokRes.ok) {
+                    const rapidData = await rapidTikTokRes.json();
+                    const videoUrl = rapidData.video?.[0] || rapidData.play;
+                    if (videoUrl) {
+                        const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
+                        return res.json({
+                            exito: true,
+                            videoUrlHD: proxyUrl,
+                            videoUrl: proxyUrl,
+                            titulo: rapidData.description || 'TikTok Video'
+                        });
+                    }
                 }
+            } catch (e) {
+                console.log(`Error RapidAPI TikTok Key [${i + 1}]`);
             }
-        } catch (e) {
-            console.log('Error en intento 3 SSSTik');
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo procesar este enlace de TikTok.'
+            mensaje: 'No se pudo procesar este enlace de TikTok. Intenta con el enlace completo desde el navegador.'
         });
 
     } catch (err) {
         console.error('Error TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el video de TikTok.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error interno en servidor al procesar TikTok.' });
     }
 }
 
@@ -320,7 +304,7 @@ async function procesarPinterest(inputUrl, res) {
         });
 
         if (!response.ok) {
-            return res.status(400).json({ exito: false, mensaje: 'No se pudo acceder al enlace de Pinterest.' });
+            return res.status(400).json({ exito: false, mensaje: 'No se pudo acceder a Pinterest.' });
         }
 
         const html = await response.text();
@@ -343,10 +327,10 @@ async function procesarPinterest(inputUrl, res) {
             });
         }
 
-        return res.status(400).json({ exito: false, mensaje: 'Este Pin no contiene un video válido para descargar.' });
+        return res.status(400).json({ exito: false, mensaje: 'Este Pin no contiene un video válido.' });
     } catch (err) {
         console.error('Error Pinterest:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno procesando Pinterest.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error interno en Pinterest.' });
     }
 }
 
