@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // ==========================================
-// 1. ROTACIÓN DE API KEYS (SPOTIFY)
+// ROTACIÓN DE API KEYS (SPOTIFY)
 // ==========================================
 const API_KEYS = [
     '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038',
@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.static(__dirname));
 
 // ==========================================
-// ENDPOINT PRINCIPAL: /api/descargar
+// ENDPOINT PRINCIPAL
 // ==========================================
 app.post('/api/descargar', async (req, res) => {
     let { url, plataforma } = req.body;
@@ -97,7 +97,43 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA SPOTIFY
+// 1. TIKTOK (USANDO LA API QUE SÍ TE FUNCIONABA)
+// ==========================================
+async function procesarTikTok(url, res) {
+    try {
+        const response = await axios.get(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+
+        const data = response.data;
+
+        if (data && data.code === 0 && data.data) {
+            const rawVideoUrl = data.data.hdplay || data.data.play;
+            const videoTitle = data.data.title || 'TikTok_Video';
+
+            // Pasa el enlace por el proxy para forzar la descarga sin bloqueos de origen (CORS)
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(videoTitle)}.mp4`;
+
+            return res.json({
+                exito: true,
+                videoUrlHD: proxyUrl,
+                videoUrl: proxyUrl,
+                downloadUrl: proxyUrl,
+                titulo: videoTitle
+            });
+        }
+
+        return res.status(400).json({ exito: false, mensaje: 'No se encontró el video de TikTok.' });
+    } catch (err) {
+        console.error('Error TikTok:', err.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar TikTok.' });
+    }
+}
+
+// ==========================================
+// 2. LÓGICA SPOTIFY
 // ==========================================
 async function procesarSpotify(input, res) {
     try {
@@ -163,49 +199,6 @@ async function procesarSpotify(input, res) {
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
         return res.status(500).json({ exito: false, mensaje: 'Error al procesar Spotify.' });
-    }
-}
-
-// ==========================================
-// 2. LÓGICA TIKTOK (REESTRUCTURADA CON AXIOS)
-// ==========================================
-async function procesarTikTok(url, res) {
-    try {
-        // Petición a SSSTik mediante AXIOS
-        const params = new URLSearchParams();
-        params.append('id', url);
-        params.append('locale', 'es');
-        params.append('tt', '0');
-
-        const response = await axios.post('https://ssstik.io/abc?url=dl', params, {
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Origin': 'https://ssstik.io',
-                'Referer': 'https://ssstik.io/es'
-            }
-        });
-
-        const html = response.data;
-        const linkMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*download_link/i) || html.match(/href="(https:\/\/[^"]+)"/i);
-
-        if (linkMatch && linkMatch[1]) {
-            const rawVideoUrl = linkMatch[1];
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
-
-            return res.json({
-                exito: true,
-                videoUrlHD: proxyUrl,
-                videoUrl: proxyUrl,
-                titulo: 'TikTok Video'
-            });
-        }
-
-        return res.status(400).json({ exito: false, mensaje: 'No se pudo extraer el enlace del video.' });
-
-    } catch (err) {
-        console.error('Error procesando TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar TikTok.' });
     }
 }
 
