@@ -174,100 +174,66 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (RESOLUCIÓN DIRECTA + RESPALDO)
+// 2. LÓGICA TIKTOK (API ROBUSTA SSSTIK)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        let cleanUrl = inputUrl.trim();
+        const cleanUrl = inputUrl.trim();
 
-        // 1. Resolver URL corta (vt.tiktok.com / vm.tiktok.com)
-        if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
-            try {
-                const headRes = await fetch(cleanUrl, {
-                    method: 'GET',
-                    redirect: 'follow',
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                    }
+        // 1. Petición inicial a SSSTIK para obtener el token dinámico
+        const initRes = await fetch('https://ssstik.io/es', {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+
+        const initHtml = await initRes.text();
+        
+        // Extraer el token de seguridad dinámico de SSSTIK (tt)
+        const ttMatch = initHtml.match(/s_tt\s*=\s*["']([^"']+)["']/);
+        const ttToken = ttMatch ? ttMatch[1] : '';
+
+        // 2. Enviar la URL de TikTok a la API de scraping de SSSTIK
+        const params = new URLSearchParams();
+        params.append('id', cleanUrl);
+        params.append('locale', 'es');
+        params.append('tt', ttToken);
+
+        const scrapeRes = await fetch('https://ssstik.io/abc?url=dl', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'hx-target': 'target',
+                'hx-current-url': 'https://ssstik.io/es',
+                'hx-request': 'true'
+            },
+            body: params.toString()
+        });
+
+        if (scrapeRes.ok) {
+            const htmlResult = await scrapeRes.text();
+
+            // Extraer el enlace de descarga directa del video sin marca de agua
+            const downloadMatch = htmlResult.match(/href=["'](https:\/\/[^"']+)["'][^>]*class=["'][^"']*without_watermark/i) ||
+                                  htmlResult.match(/href=["'](https:\/\/tikcdn\.[^"']+)["']/i) ||
+                                  htmlResult.match(/href=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i);
+
+            // Extraer el título o descripción del video
+            const titleMatch = htmlResult.match(/<p class=["']maintext["']>([^<]+)<\/p>/i);
+            const title = titleMatch ? titleMatch[1].trim() : 'TikTok_Video';
+
+            if (downloadMatch && downloadMatch[1]) {
+                const directVideoUrl = downloadMatch[1];
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(directVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: title
                 });
-                cleanUrl = headRes.url || cleanUrl;
-            } catch (e) {
-                console.log('Error al expandir URL corta:', e.message);
             }
-        }
-
-        // Extraer el ID del video si existe en la URL expandida
-        const idMatch = cleanUrl.match(/\/video\/(\d+)/);
-        const videoId = idMatch ? idMatch[1] : null;
-
-        // --- OPCIÓN A: API Directa de TikTok por ID ---
-        if (videoId) {
-            try {
-                const ttApiUrl = `https://www.tiktok.com/api/item/detail/?itemId=${videoId}`;
-                const ttRes = await fetch(ttApiUrl, {
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                        'Referer': 'https://www.tiktok.com/'
-                    }
-                });
-
-                if (ttRes.ok) {
-                    const ttData = await ttRes.json();
-                    const item = ttData.itemInfo?.itemStruct;
-                    if (item) {
-                        const rawVideoUrl = item.video?.downloadAddr || item.video?.playAddr;
-                        const title = item.desc || 'TikTok_Video';
-
-                        if (rawVideoUrl) {
-                            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
-                            return res.json({
-                                exito: true,
-                                videoUrlHD: proxyUrl,
-                                videoUrl: proxyUrl,
-                                titulo: title
-                            });
-                        }
-                    }
-                }
-            } catch (e) {
-                console.log('Fallo API directa de TikTok:', e.message);
-            }
-        }
-
-        // --- OPCIÓN B: Respaldo TikWM con URL Completa ---
-        try {
-            const formData = new URLSearchParams();
-            formData.append('url', cleanUrl);
-            formData.append('hd', '1');
-
-            const apiRes = await fetch('https://tikwm.com/api/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-                body: formData.toString()
-            });
-
-            if (apiRes.ok) {
-                const data = await apiRes.json();
-                if (data && data.code === 0 && data.data) {
-                    let videoUrl = data.data.hdplay || data.data.play;
-                    if (videoUrl.startsWith('//')) videoUrl = 'https:' + videoUrl;
-                    
-                    const tituloVideo = data.data.title || 'TikTok_Video';
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=${encodeURIComponent(tituloVideo)}.mp4`;
-
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: tituloVideo
-                    });
-                }
-            }
-        } catch (e) {
-            console.log('Fallo TikWM:', e.message);
         }
 
         return res.status(400).json({
@@ -276,7 +242,7 @@ async function procesarTikTok(inputUrl, res) {
         });
 
     } catch (err) {
-        console.error('Error general TikTok:', err.message);
+        console.error('Error procesando TikTok:', err.message);
         return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar TikTok.' });
     }
 }
