@@ -28,9 +28,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// ==========================================
-// ENDPOINT PRINCIPAL DE PROCESAMIENTO
-// ==========================================
+// Endpoint principal
 app.post('/api/descargar', async (req, res) => {
     let { url, plataforma } = req.body;
 
@@ -56,9 +54,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// ==========================================
-// PROXY DE DESCARGA DIRECTA (EVITA BLOQUEOS Y CORS)
-// ==========================================
+// Proxy de descarga directa
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
     let fileName = req.query.name || 'archivo_media';
@@ -174,7 +170,7 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// FUNCIÓN AUXILIAR: EXPANDIR ENLACES CORTOS DE TIKTOK
+// FUNCIÓN PARA RESOVELER ENLACES TIKTOK
 // ==========================================
 async function resolverUrlCortaTikTok(shortUrl) {
     try {
@@ -192,30 +188,51 @@ async function resolverUrlCortaTikTok(shortUrl) {
 }
 
 // ==========================================
-// 2. PROCESAR TIKTOK (SOPORTA vt.tiktok.com)
+// 2. PROCESAR TIKTOK (VERSIÓN OPTIMIZADA Y LIMPIA)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
         let cleanUrl = inputUrl.trim();
 
-        // 1. Expandir enlace corto si viene de vt.tiktok.com o vm.tiktok.com
+        // 1. Resolver enlace si es acortado
         if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
             cleanUrl = await resolverUrlCortaTikTok(cleanUrl);
-            console.log('URL TikTok Resuelta:', cleanUrl);
         }
 
-        // 2. Consultar la API de TikWM con la URL completa
-        const response = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}&hd=1`, {
+        // 2. Limpiar parámetros sobrantes de rastreo (?r=1&t=...)
+        cleanUrl = cleanUrl.split('?')[0];
+        console.log('URL TikTok Limpia procesada:', cleanUrl);
+
+        // 3. Petición POST a TikWM
+        const params = new URLSearchParams();
+        params.append('url', cleanUrl);
+        params.append('count', '12');
+        params.append('cursor', '0');
+        params.append('web', '1');
+        params.append('hd', '1');
+
+        const response = await fetch('https://www.tikwm.com/api/', {
+            method: 'POST',
             headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
+            },
+            body: params
         });
 
         if (response.ok) {
             const data = await response.json();
 
             if (data && data.data) {
-                const rawVideoUrl = data.data.hdplay || data.data.play;
+                let rawVideoUrl = data.data.hdplay || data.data.play;
+                
+                // Asegurar protocolo completo
+                if (rawVideoUrl && rawVideoUrl.startsWith('//')) {
+                    rawVideoUrl = 'https:' + rawVideoUrl;
+                } else if (rawVideoUrl && !rawVideoUrl.startsWith('http')) {
+                    rawVideoUrl = 'https://www.tikwm.com' + rawVideoUrl;
+                }
+
                 const videoTitle = data.data.title || 'TikTok_Video';
 
                 if (rawVideoUrl) {
@@ -233,7 +250,7 @@ async function procesarTikTok(inputUrl, res) {
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el video de TikTok. Verifica que no sea privado.'
+            mensaje: 'No se pudo obtener el video de TikTok. Inténtalo de nuevo.'
         });
 
     } catch (err) {
