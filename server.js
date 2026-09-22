@@ -171,69 +171,84 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. PROCESAR TIKTOK (Con respaldo anti-bloqueo)
+// 2. PROCESAR TIKTOK (Soporte nativo enlaces vt.tiktok)
 // ==========================================
 async function procesarTikTok(url, res) {
     try {
-        // Intento 1: API de TikWM
-        const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/json'
-            }
-        });
-        
-        const contentType = response.headers.get('content-type') || '';
-        
-        if (response.ok && contentType.includes('application/json')) {
-            const data = await response.json();
-            if (data.code === 0 && data.data) {
-                const videoHD = data.data.hdplay ? (data.data.hdplay.startsWith('http') ? data.data.hdplay : `https://tikwm.com${data.data.hdplay}`) : null;
-                const videoSD = data.data.play ? (data.data.play.startsWith('http') ? data.data.play : `https://tikwm.com${data.data.play}`) : null;
-                const mainVideo = videoHD || videoSD;
+        const cleanUrl = url.trim();
 
-                if (mainVideo) {
-                    const proxyHD = `/api/download-file?url=${encodeURIComponent(videoHD || mainVideo)}&name=TikTok_HD.mp4`;
-                    const proxySD = `/api/download-file?url=${encodeURIComponent(videoSD || mainVideo)}&name=TikTok_SD.mp4`;
+        // Intento 1: API Cobalt (Resuelve nativamente enlaces vt.tiktok.com)
+        try {
+            const cobaltRes = await fetch('https://api.cobalt.tools/api/json', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                body: JSON.stringify({
+                    url: cleanUrl,
+                    vCodec: 'h264',
+                    isNoWatermark: true
+                })
+            });
+
+            if (cobaltRes.ok) {
+                const cobaltData = await cobaltRes.json();
+                if (cobaltData.url) {
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(cobaltData.url)}&name=TikTok_Video.mp4`;
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
+                        titulo: 'TikTok Video'
+                    });
+                }
+            }
+        } catch (e) {
+            console.log('Falló Intento 1 (Cobalt):', e.message);
+        }
+
+        // Intento 2: API de TikWM por POST
+        try {
+            const response = await fetch('https://www.tikwm.com/api/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                body: new URLSearchParams({
+                    url: cleanUrl,
+                    count: 12,
+                    cursor: 0,
+                    web: 1,
+                    hd: 1
+                })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                if (data.code === 0 && data.data) {
+                    const videoLink = data.data.hdplay || data.data.play;
+                    const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(finalVideoUrl)}&name=TikTok_Video.mp4`;
 
                     return res.json({
                         exito: true,
-                        videoUrlHD: proxyHD,
-                        videoUrl: proxySD,
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
                         titulo: data.data.title || 'TikTok Video'
                     });
                 }
             }
-        }
-
-        // Intento 2: API alternativa SSSTik (si TikWM falla)
-        const ssstikRes = await fetch(`https://ssstik.io/abc?url=dl`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
-            body: new URLSearchParams({ id: url, locale: 'es', tt: '0' })
-        });
-
-        if (ssstikRes.ok) {
-            const html = await ssstikRes.text();
-            const linkMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*download_link/i) || html.match(/href="(https:\/\/[^"]+)"/i);
-            if (linkMatch && linkMatch[1]) {
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(linkMatch[1])}&name=TikTok_Video.mp4`;
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: 'TikTok Video'
-                });
-            }
+        } catch (e) {
+            console.log('Falló Intento 2 (TikWM):', e.message);
         }
 
         return res.status(400).json({ exito: false, mensaje: 'No se pudo procesar este enlace de TikTok.' });
     } catch (err) {
         console.error('Error TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el video de TikTok.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar TikTok.' });
     }
 }
 
