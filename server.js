@@ -170,56 +170,81 @@ async function procesarSpotify(input, res) {
     }
 }
 
-const { exec } = require('child_process');
+const axios = require('axios');
+
+// Resuelve URLs cortas vt.tiktok.com obteniendo la redirección
+async function expandirUrlTikTok(shortUrl) {
+    try {
+        const response = await axios.get(shortUrl, {
+            maxRedirects: 0,
+            validateStatus: status => status >= 200 && status < 400,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+            }
+        });
+        if (response.headers.location) {
+            return response.headers.location.split('?')[0];
+        }
+    } catch (e) {
+        if (e.response && e.response.headers && e.response.headers.location) {
+            return e.response.headers.location.split('?')[0];
+        }
+    }
+    return shortUrl;
+}
 
 // ==========================================
-// PROCESAR TIKTOK (Soporte Nativo con yt-dlp)
+// PROCESAR TIKTOK
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        const cleanUrl = inputUrl.trim();
+        let cleanUrl = inputUrl.trim();
 
-        // 1. Ejecutar yt-dlp nativo para extraer el enlace directo del video (JSON)
-        const comando = `./yt-dlp --dump-json --no-warnings --no-call-home "${cleanUrl}"`;
+        // 1. Expandir vt.tiktok.com a URL completa
+        if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
+            cleanUrl = await expandirUrlTikTok(cleanUrl);
+            console.log('URL TikTok Expandida:', cleanUrl);
+        }
 
-        exec(comando, { timeout: 15000 }, (error, stdout, stderr) => {
-            if (error || !stdout) {
-                console.error('Error yt-dlp TikTok:', error || stderr);
-                return res.status(400).json({
-                    exito: false,
-                    mensaje: 'No se pudo procesar este enlace de TikTok. Verifica la URL.'
-                });
+        // 2. Consultar TikWM con la URL expandida
+        const tikwmRes = await axios.post('https://www.tikwm.com/api/', 
+            new URLSearchParams({
+                url: cleanUrl,
+                count: 12,
+                cursor: 0,
+                web: 1,
+                hd: 1
+            }), {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                timeout: 10000
             }
+        );
 
-            try {
-                const info = JSON.parse(stdout);
-                
-                // Extraer la URL del video original sin marca de agua
-                const directUrl = info.url || (info.formats && info.formats[info.formats.length - 1]?.url);
+        if (tikwmRes.data && tikwmRes.data.code === 0 && tikwmRes.data.data) {
+            const data = tikwmRes.data.data;
+            const videoLink = data.hdplay || data.play;
+            const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(finalVideoUrl)}&name=TikTok_Video.mp4`;
 
-                if (!directUrl) {
-                    return res.status(400).json({ exito: false, mensaje: 'No se encontró enlace multimedia.' });
-                }
+            return res.json({
+                exito: true,
+                videoUrlHD: proxyUrl,
+                videoUrl: proxyUrl,
+                titulo: data.title || 'TikTok Video'
+            });
+        }
 
-                // Generar URL mediante el proxy local del backend
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(directUrl)}&name=TikTok_Video.mp4`;
-
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: info.title || info.description || 'TikTok Video'
-                });
-
-            } catch (e) {
-                console.error('Error al procesar JSON de yt-dlp:', e.message);
-                return res.status(500).json({ exito: false, mensaje: 'Error al interpretar los datos del video.' });
-            }
+        return res.status(400).json({
+            exito: false,
+            mensaje: 'No se pudo obtener el video de TikTok. Intenta con un enlace normal.'
         });
 
     } catch (err) {
-        console.error('Error general TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno en el servidor.' });
+        console.error('Error TikTok:', err.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el enlace de TikTok.' });
     }
 }
 // ==========================================
