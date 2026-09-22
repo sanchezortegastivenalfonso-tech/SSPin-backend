@@ -6,15 +6,15 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ==========================================
-// LISTA Y ROTACIÓN DE API KEYS (RAPIDAPI)
+// LISTA Y ROTACIÓN DE LAS 6 API KEYS (SPOTIFY)
 // ==========================================
 const API_KEYS = [
     '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038', // Clave original
-    'd57a57f0e6msh60d33aa70fd4bfap142a4ejsn3dd732d92d81', // Primera
-    'cfe9f96619msh2bf6f1ef96b6f5dp1ca3b8jsn55c76c99edbb', // Segunda
-    'ff647c7411msh1f8a4b925654801p17bfa0jsn43708a13c350', // Tercera
-    '662e02b486msh639f823b995cba3p1a1e83jsn3419c2db929d', // Cuarta
-    '9652174c07msh5a18f10e100709cp1f0e56jsna7079cb837cf'  // Quinta
+    'd57a57f0e6msh60d33aa70fd4bfap142a4ejsn3dd732d92d81', // Primera nueva
+    'cfe9f96619msh2bf6f1ef96b6f5dp1ca3b8jsn55c76c99edbb', // Segunda nueva
+    'ff647c7411msh1f8a4b925654801p17bfa0jsn43708a13c350', // Tercera nueva
+    '662e02b486msh639f823b995cba3p1a1e83jsn3419c2db929d', // Cuarta nueva
+    '9652174c07msh5a18f10e100709cp1f0e56jsna7079cb837cf'  // Quinta nueva
 ];
 
 let currentKeyIndex = 0;
@@ -30,7 +30,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Expandir enlaces acortados (vt.tiktok.com, pin.it, etc.)
+// Expandir enlaces acortados genéricos
 async function expandirUrl(shortUrl) {
     try {
         const response = await fetch(shortUrl, {
@@ -72,7 +72,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// Proxy para forzar descarga directa
+// Proxy para forzar descarga directa en el navegador
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
     let fileName = req.query.name || 'archivo_media';
@@ -115,7 +115,7 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. PROCESAR SPOTIFY (Rotación de 5 Keys)
+// 1. PROCESAR SPOTIFY (Rotación de 6 Keys)
 // ==========================================
 async function procesarSpotify(input, res) {
     try {
@@ -144,7 +144,7 @@ async function procesarSpotify(input, res) {
 
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
 
-        // Probar de forma secuencial las 5 API Keys disponibles
+        // Intentar secuencialmente con las 6 API Keys
         for (let i = 0; i < API_KEYS.length; i++) {
             const currentApiKey = getNextApiKey();
 
@@ -177,7 +177,7 @@ async function procesarSpotify(input, res) {
             }
         }
 
-        // Respaldo secundario si todas las API Keys fallan
+        // Respaldo secundario si todas las API Keys de RapidAPI se agotan
         try {
             const fallbackRes = await fetch(`https://api.spotifydown.com/download/${trackId}`, {
                 headers: {
@@ -199,27 +199,43 @@ async function procesarSpotify(input, res) {
                 }
             }
         } catch (e) {
-            console.log('Error en CDN de respaldo');
+            console.log('Error en CDN de respaldo de Spotify');
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'Se ha alcanzado el límite de descargas diarias de Spotify. Por favor, intenta de nuevo mañana.'
+            mensaje: 'Se ha alcanzado el límite diario de descargas de Spotify. Por favor, reintenta mañana.'
         });
 
     } catch (e) {
         console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la canción.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la canción de Spotify.' });
     }
 }
 
 // ==========================================
-// 2. PROCESAR TIKTOK (Con respaldo anti-bloqueo)
+// 2. PROCESAR TIKTOK (Soporte Enlaces Cortos vt.tiktok.com)
 // ==========================================
-async function procesarTikTok(url, res) {
+async function procesarTikTok(inputUrl, res) {
     try {
-        // Intento 1: API de TikWM
-        const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(url)}`, {
+        let finalUrl = inputUrl;
+        
+        // Resolver redirección de enlaces acortados
+        try {
+            const redirectRes = await fetch(inputUrl, {
+                method: 'HEAD',
+                redirect: 'follow',
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
+            if (redirectRes.url) finalUrl = redirectRes.url;
+        } catch (e) {
+            console.log('No se pudo resolver redirección HEAD, usando URL directa.');
+        }
+
+        // Intento 1: API TikWM
+        const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(finalUrl)}`, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                 'Accept': 'application/json'
@@ -249,14 +265,32 @@ async function procesarTikTok(url, res) {
             }
         }
 
-        // Intento 2: API alternativa SSSTik (si TikWM falla)
+        // Intento 2: API LoLHuman (Respaldo)
+        const altRes = await fetch(`https://api.lolhuman.xyz/api/tiktok?apikey=free&url=${encodeURIComponent(finalUrl)}`);
+        if (altRes.ok) {
+            const altData = await altRes.json();
+            if (altData.status === 200 && altData.result) {
+                const videoLink = altData.result.link || altData.result;
+                if (typeof videoLink === 'string' && videoLink.startsWith('http')) {
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoLink)}&name=TikTok_Video.mp4`;
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
+                        titulo: 'TikTok Video'
+                    });
+                }
+            }
+        }
+
+        // Intento 3: SSSTik
         const ssstikRes = await fetch(`https://ssstik.io/abc?url=dl`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             },
-            body: new URLSearchParams({ id: url, locale: 'es', tt: '0' })
+            body: new URLSearchParams({ id: finalUrl, locale: 'es', tt: '0' })
         });
 
         if (ssstikRes.ok) {
@@ -274,6 +308,7 @@ async function procesarTikTok(url, res) {
         }
 
         return res.status(400).json({ exito: false, mensaje: 'No se pudo procesar este enlace de TikTok.' });
+
     } catch (err) {
         console.error('Error TikTok:', err.message);
         return res.status(500).json({ exito: false, mensaje: 'Error al procesar el video de TikTok.' });
@@ -281,7 +316,7 @@ async function procesarTikTok(url, res) {
 }
 
 // ==========================================
-// 3. PROCESAR PINTEREST (Scraping Nativo Directo)
+// 3. PROCESAR PINTEREST
 // ==========================================
 async function procesarPinterest(url, res) {
     try {
