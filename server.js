@@ -172,7 +172,7 @@ async function procesarSpotify(input, res) {
 
 const axios = require('axios');
 
-// 1. Expandir URLs acortadas vt.tiktok.com
+// Resuelve URLs acortadas de TikTok (vt.tiktok.com / vm.tiktok.com)
 async function expandirUrlTikTok(shortUrl) {
     try {
         const response = await axios.get(shortUrl, {
@@ -194,7 +194,7 @@ async function expandirUrlTikTok(shortUrl) {
 }
 
 // ==========================================
-// PROCESAR TIKTOK (Sistema Multi-Fallback Anti-403)
+// PROCESAR TIKTOK (Cobalt & Anti-403 API)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
@@ -205,45 +205,23 @@ async function procesarTikTok(inputUrl, res) {
             console.log('URL TikTok Expandida:', cleanUrl);
         }
 
-        // METODO 1: Cloudflare Worker API (No bloquea datacenters)
+        // METODO 1: Cobalt API (Instancia pública estable sin protección anti-bot agresiva)
         try {
-            const api1 = await axios.get(`https://tdownv4.sl-bjs.workers.dev/?down=${encodeURIComponent(cleanUrl)}`, {
-                timeout: 8000
-            });
-            if (api1.data && (api1.data.video || api1.data.url)) {
-                const videoDirect = api1.data.video || api1.data.url;
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoDirect)}&name=TikTok_Video.mp4`;
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: api1.data.title || 'TikTok Video'
-                });
-            }
-        } catch (e1) {
-            console.log('Método 1 (Worker) falló:', e1.message);
-        }
-
-        // METODO 2: SSSTik API
-        try {
-            const params = new URLSearchParams();
-            params.append('id', cleanUrl);
-            params.append('locale', 'en');
-            params.append('tt', 'RFZzS3I3');
-
-            const api2 = await axios.post('https://ssstik.io/abc?url=dl', params, {
+            const cobaltRes = await axios.post('https://api.cobalt.tools/api/json', {
+                url: cleanUrl,
+                videoQuality: 'max'
+            }, {
                 headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
                 },
-                timeout: 8000
+                timeout: 10000
             });
 
-            if (api2.data) {
-                // Extraer el enlace con regex del HTML retornado
-                const match = api2.data.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/);
-                if (match && match[1]) {
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(match[1])}&name=TikTok_Video.mp4`;
+            if (cobaltRes.data && (cobaltRes.data.url || cobaltRes.data.picker)) {
+                const directVideo = cobaltRes.data.url || (cobaltRes.data.picker && cobaltRes.data.picker[0]?.url);
+                if (directVideo) {
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(directVideo)}&name=TikTok_Video.mp4`;
                     return res.json({
                         exito: true,
                         videoUrlHD: proxyUrl,
@@ -252,19 +230,18 @@ async function procesarTikTok(inputUrl, res) {
                     });
                 }
             }
-        } catch (e2) {
-            console.log('Método 2 (SSSTik) falló:', e2.message);
+        } catch (e1) {
+            console.log('Método 1 (Cobalt) falló:', e1.message);
         }
 
-        // METODO 3: TikWM vía Query Directa
+        // METODO 2: API alternativa de Tikwm vía proxy CORS (Bypassea el 403 de Cloudflare)
         try {
-            const api3 = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}`, {
-                headers: { 'User-Agent': 'Mozilla/5.0' },
-                timeout: 8000
+            const proxyRes = await axios.get(`https://corsproxy.io/?${encodeURIComponent('https://www.tikwm.com/api/?url=' + cleanUrl)}`, {
+                timeout: 10000
             });
 
-            if (api3.data && api3.data.data) {
-                const data = api3.data.data;
+            if (proxyRes.data && proxyRes.data.data) {
+                const data = proxyRes.data.data;
                 const videoLink = data.hdplay || data.play;
                 const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
                 const proxyUrl = `/api/download-file?url=${encodeURIComponent(finalVideoUrl)}&name=TikTok_Video.mp4`;
@@ -276,18 +253,37 @@ async function procesarTikTok(inputUrl, res) {
                     titulo: data.title || 'TikTok Video'
                 });
             }
+        } catch (e2) {
+            console.log('Método 2 (TikWM + Proxy) falló:', e2.message);
+        }
+
+        // METODO 3: Fallback Loli/LoFi API
+        try {
+            const api3 = await axios.get(`https://api.lolihuman.xyz/api/tiktok?apikey=9b253331a31d99616239f280&url=${encodeURIComponent(cleanUrl)}`, {
+                timeout: 8000
+            });
+
+            if (api3.data && api3.data.result && api3.data.result.link) {
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(api3.data.result.link)}&name=TikTok_Video.mp4`;
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: api3.data.result.title || 'TikTok Video'
+                });
+            }
         } catch (e3) {
-            console.log('Método 3 (TikWM GET) falló:', e3.message);
+            console.log('Método 3 (Fallback) falló:', e3.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el video. Verifica que la URL sea válida y el video público.'
+            mensaje: 'No se pudo obtener el video de TikTok. Intenta nuevamente.'
         });
 
     } catch (err) {
         console.error('Error general TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la solicitud.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el enlace de TikTok.' });
     }
 }
 // ==========================================
