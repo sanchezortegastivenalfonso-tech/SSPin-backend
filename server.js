@@ -170,9 +170,10 @@ async function procesarSpotify(input, res) {
     }
 }
 
+const { execFile } = require('child_process');
 const axios = require('axios');
 
-// Resuelve URLs acortadas de TikTok (vt.tiktok.com / vm.tiktok.com)
+// Resuelve enlaces cortos vt.tiktok.com
 async function expandirUrlTikTok(shortUrl) {
     try {
         const response = await axios.get(shortUrl, {
@@ -194,7 +195,7 @@ async function expandirUrlTikTok(shortUrl) {
 }
 
 // ==========================================
-// PROCESAR TIKTOK (Cobalt & Anti-403 API)
+// PROCESAR TIKTOK VÍA YT-DLP NATIVO
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
@@ -205,85 +206,51 @@ async function procesarTikTok(inputUrl, res) {
             console.log('URL TikTok Expandida:', cleanUrl);
         }
 
-        // METODO 1: Cobalt API (Instancia pública estable sin protección anti-bot agresiva)
-        try {
-            const cobaltRes = await axios.post('https://api.cobalt.tools/api/json', {
-                url: cleanUrl,
-                videoQuality: 'max'
-            }, {
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                },
-                timeout: 10000
-            });
+        const ytDlpPath = path.join(__dirname, 'yt-dlp');
 
-            if (cobaltRes.data && (cobaltRes.data.url || cobaltRes.data.picker)) {
-                const directVideo = cobaltRes.data.url || (cobaltRes.data.picker && cobaltRes.data.picker[0]?.url);
-                if (directVideo) {
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(directVideo)}&name=TikTok_Video.mp4`;
+        // Ejecutar yt-dlp para extraer los enlaces directos sin descargar el archivo
+        const args = [
+            '--dump-json',
+            '--no-warnings',
+            cleanUrl
+        ];
+
+        execFile(ytDlpPath, args, { timeout: 15000 }, (error, stdout, stderr) => {
+            if (error) {
+                console.error('Error yt-dlp TikTok:', error.message);
+                return res.status(400).json({
+                    exito: false,
+                    mensaje: 'No se pudo procesar el enlace de TikTok.'
+                });
+            }
+
+            try {
+                const info = JSON.parse(stdout);
+                // Extraer la URL directa del video (MP3/MP4)
+                const directUrl = info.url || (info.formats && info.formats[info.formats.length - 1]?.url);
+
+                if (directUrl) {
                     return res.json({
                         exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: 'TikTok Video'
+                        videoUrlHD: directUrl,
+                        videoUrl: directUrl,
+                        titulo: info.title || 'TikTok Video'
+                    });
+                } else {
+                    return res.status(400).json({
+                        exito: false,
+                        mensaje: 'No se encontró un enlace directo de video.'
                     });
                 }
+            } catch (parseErr) {
+                console.error('Error al parsear JSON de yt-dlp:', parseErr.message);
+                return res.status(500).json({ exito: false, mensaje: 'Error al procesar la respuesta del video.' });
             }
-        } catch (e1) {
-            console.log('Método 1 (Cobalt) falló:', e1.message);
-        }
-
-        // METODO 2: API alternativa de Tikwm vía proxy CORS (Bypassea el 403 de Cloudflare)
-        try {
-            const proxyRes = await axios.get(`https://corsproxy.io/?${encodeURIComponent('https://www.tikwm.com/api/?url=' + cleanUrl)}`, {
-                timeout: 10000
-            });
-
-            if (proxyRes.data && proxyRes.data.data) {
-                const data = proxyRes.data.data;
-                const videoLink = data.hdplay || data.play;
-                const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(finalVideoUrl)}&name=TikTok_Video.mp4`;
-
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: data.title || 'TikTok Video'
-                });
-            }
-        } catch (e2) {
-            console.log('Método 2 (TikWM + Proxy) falló:', e2.message);
-        }
-
-        // METODO 3: Fallback Loli/LoFi API
-        try {
-            const api3 = await axios.get(`https://api.lolihuman.xyz/api/tiktok?apikey=9b253331a31d99616239f280&url=${encodeURIComponent(cleanUrl)}`, {
-                timeout: 8000
-            });
-
-            if (api3.data && api3.data.result && api3.data.result.link) {
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(api3.data.result.link)}&name=TikTok_Video.mp4`;
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: api3.data.result.title || 'TikTok Video'
-                });
-            }
-        } catch (e3) {
-            console.log('Método 3 (Fallback) falló:', e3.message);
-        }
-
-        return res.status(400).json({
-            exito: false,
-            mensaje: 'No se pudo obtener el video de TikTok. Intenta nuevamente.'
         });
 
     } catch (err) {
         console.error('Error general TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el enlace de TikTok.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la solicitud.' });
     }
 }
 // ==========================================
