@@ -5,6 +5,9 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// URL base de tu backend en Render
+const SERVER_URL = 'https://sspin-backend-0vj7.onrender.com';
+
 // ==========================================
 // 1. ROTACIÓN DE API KEYS (SPOTIFY)
 // ==========================================
@@ -28,6 +31,43 @@ function getNextApiKey() {
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
+
+// ==========================================
+// PROXY DE DESCARGA DIRECTA POR STREAMING
+// ==========================================
+app.get('/api/download-file', async (req, res) => {
+    const fileUrl = req.query.url;
+    let fileName = req.query.name || req.query.filename || 'archivo_media';
+
+    if (!fileUrl) {
+        return res.status(400).send('URL no proporcionada');
+    }
+
+    try {
+        const response = await axios({
+            method: 'get',
+            url: fileUrl,
+            responseType: 'stream',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+
+        if (!fileName.endsWith('.mp3') && !fileName.endsWith('.mp4')) {
+            fileName += '.mp3';
+        }
+
+        // Forzar descarga directa en lugar de reproducción
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+        res.setHeader('Content-Type', 'application/octet-stream');
+
+        response.data.pipe(res);
+
+    } catch (error) {
+        console.error('Error proxy descarga:', error.message);
+        res.status(500).send('Error al procesar la descarga directa');
+    }
+});
 
 // ==========================================
 // ENDPOINT PRINCIPAL: /api/descargar
@@ -128,11 +168,13 @@ async function procesarSpotify(input, res) {
         }
 
         if (audioUrl) {
+            const proxyDownloadUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
+
             return res.json({
                 exito: true,
                 titulo: titleCombined,
                 coverUrl: coverImage,
-                audioUrl: audioUrl // Entrega el link directo para descarga inmediata sin fallos de proxy
+                audioUrl: proxyDownloadUrl
             });
         }
 
@@ -171,10 +213,12 @@ async function procesarTikTok(url, res) {
 
         if (linkMatch && linkMatch[1]) {
             const rawVideoUrl = linkMatch[1];
+            const proxyUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
+
             return res.json({
                 exito: true,
-                videoUrlHD: rawVideoUrl,
-                videoUrl: rawVideoUrl,
+                videoUrlHD: proxyUrl,
+                videoUrl: proxyUrl,
                 titulo: 'TikTok Video'
             });
         }
@@ -207,10 +251,12 @@ async function procesarPinterest(inputUrl, res) {
             let rawVideoUrl = videoMatch[0].replace(/\\/g, '');
             if (videoMatch[1]) rawVideoUrl = videoMatch[1].replace(/\\/g, '');
 
+            const proxyUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=Pinterest_Video.mp4`;
+
             return res.json({
                 exito: true,
-                videoUrlHD: rawVideoUrl,
-                videoUrl: rawVideoUrl,
+                videoUrlHD: proxyUrl,
+                videoUrl: proxyUrl,
                 titulo: 'Pinterest Video'
             });
         }
