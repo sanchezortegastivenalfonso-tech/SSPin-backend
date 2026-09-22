@@ -213,16 +213,14 @@ async function procesarSpotify(input, res) {
     }
 }
 
-
-
-       // ==========================================
+// ==========================================
 // 2. PROCESAR TIKTOK (Optimizada para servidores en la nube como Render)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
         const cleanUrl = inputUrl.trim();
 
-        // 1. Intento principal: API Tiklydown (Extrae links directos sin bloqueo de Render)
+        // 1. Intento principal: API Tiklydown
         try {
             const tiklyRes = await fetch(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(cleanUrl)}`);
             if (tiklyRes.ok) {
@@ -274,7 +272,7 @@ async function procesarTikTok(inputUrl, res) {
             console.log('Servidor Cobalt inactivo, pasando al terciario...');
         }
 
-        // 3. Intento terciario: TikWM con User-Agent móvil
+        // 3. Intento terciario: TikWM en modo POST
         try {
             const tikwmRes = await fetch('https://www.tikwm.com/api/', {
                 method: 'POST',
@@ -312,7 +310,7 @@ async function procesarTikTok(inputUrl, res) {
 
         return res.status(400).json({ 
             exito: false, 
-            mensaje: 'No se pudo procesar este enlace de TikTok. Intenta con un enlace normal o reintenta en unos segundos.' 
+            mensaje: 'No se pudo procesar este enlace de TikTok.' 
         });
 
     } catch (err) {
