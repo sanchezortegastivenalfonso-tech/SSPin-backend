@@ -33,7 +33,7 @@ app.use(express.json());
 app.use(express.static(__dirname));
 
 // ==========================================
-// PROXY DE DESCARGA DIRECTA POR STREAMING
+// PROXY DE DESCARGA DIRECTA (FORZAR DESCARGA MP3/MP4)
 // ==========================================
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
@@ -44,24 +44,28 @@ app.get('/api/download-file', async (req, res) => {
     }
 
     try {
-        const response = await axios({
-            method: 'get',
-            url: fileUrl,
-            responseType: 'stream',
+        const response = await axios.get(fileUrl, {
+            responseType: 'arraybuffer',
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
         });
 
-        if (!fileName.endsWith('.mp3') && !fileName.endsWith('.mp4')) {
+        // Asegurar extensión correcta
+        if (!fileName.includes('.')) {
             fileName += '.mp3';
         }
 
-        // Forzar descarga directa en lugar de reproducción
-        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
-        res.setHeader('Content-Type', 'application/octet-stream');
+        // Determinar el Content-Type exacto para que el móvil descargue
+        const isAudio = fileName.endsWith('.mp3');
+        const contentType = isAudio ? 'audio/mpeg' : 'video/mp4';
 
-        response.data.pipe(res);
+        // Cabeceras estrictas para forzar la descarga sin abrir reproductor
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+        res.setHeader('Content-Length', response.data.length);
+
+        return res.send(Buffer.from(response.data));
 
     } catch (error) {
         console.error('Error proxy descarga:', error.message);
@@ -168,24 +172,25 @@ async function procesarSpotify(input, res) {
         }
 
         if (audioUrl) {
-            const proxyDownloadUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
+            // Usar la ruta proxy con la URL absoluta de Render para forzar la descarga en el teléfono
+            const directDownloadProxyUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
 
             return res.json({
                 exito: true,
                 titulo: titleCombined,
                 coverUrl: coverImage,
-                audioUrl: proxyDownloadUrl
+                audioUrl: directDownloadProxyUrl
             });
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el archivo de audio. Intenta nuevamente.'
+            mensaje: 'No fue posible procesar la canción en este momento.'
         });
 
     } catch (e) {
-        console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno en Spotify.' });
+        console.error('Error general en procesarSpotify:', e.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar Spotify.' });
     }
 }
 
@@ -243,6 +248,7 @@ async function procesarPinterest(inputUrl, res) {
         });
 
         const html = response.data;
+
         const videoMatch = html.match(/https:\/\/[^"]+\.mp4/gi) || 
                            html.match(/"video_list":\{"V_720P":\{"url":"(https?:\/\/[^"]+)"/i) ||
                            html.match(/"url":"(https:\/\/v1\.pinimg\.com\/videos\/[^\"]+)"/i);
