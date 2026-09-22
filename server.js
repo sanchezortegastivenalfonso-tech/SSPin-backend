@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // ==========================================
-// 1. ROTACIÓN DE API KEYS (SPOTIFY)
+// 1. ROTACIÓN DE API KEYS (SPOTIFY Y TIKTOK)
 // ==========================================
 const API_KEYS = [
     '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038',
@@ -167,68 +167,48 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (EXTRACTOR ROBUSTO SSSTIK)
+// 2. LÓGICA TIKTOK (VÍA RAPIDAPI - ANTI 403)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     let cleanUrl = inputUrl.trim();
 
-    try {
-        // Obtenemos la página inicial de SSSTik para extraer los parámetros de sesión
-        const pageRes = await axios.get('https://ssstik.io/es', {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-        });
+    for (let i = 0; i < API_KEYS.length; i++) {
+        const currentApiKey = getNextApiKey();
 
-        const html = pageRes.data;
-        const ttMatch = html.match(/data-tt="([^"]+)"/) || html.match(/"tt":"([^"]+)"/);
-        const ttToken = ttMatch ? ttMatch[1] : '';
-
-        // Hacemos el POST simulando el formulario de SSSTik
-        const postData = new URLSearchParams({
-            id: cleanUrl,
-            locale: 'es',
-            tt: ttToken
-        });
-
-        const response = await axios.post('https://ssstik.io/abc?url=dl', postData, {
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Hx-Request': 'true',
-                'Hx-Target': 'target'
-            }
-        });
-
-        const resHtml = response.data;
-
-        // Extraer enlace directo del video sin marca de agua
-        const linkMatch = resHtml.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*pure-button[^"]*without_watermark/i) ||
-                          resHtml.match(/href="(https:\/\/[^"]+)"[^>]*>Direct/i) ||
-                          resHtml.match(/href="(https:\/\/[^"]+\.tikcdn\.io[^"]+)"/i) ||
-                          resHtml.match(/href="(https:\/\/[^"]+)"/i);
-
-        if (linkMatch && linkMatch[1]) {
-            const rawVideoUrl = linkMatch[1].replace(/&amp;/g, '&');
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
-
-            return res.json({
-                exito: true,
-                videoUrlHD: proxyUrl,
-                videoUrl: proxyUrl,
-                titulo: 'TikTok Video'
+        try {
+            const response = await axios.get('https://tiktok-download-without-watermark.p.rapidapi.com/analysis', {
+                params: { url: cleanUrl },
+                headers: {
+                    'x-rapidapi-key': currentApiKey,
+                    'x-rapidapi-host': 'tiktok-download-without-watermark.p.rapidapi.com'
+                },
+                timeout: 10000
             });
+
+            if (response.data && response.data.data) {
+                const videoData = response.data.data;
+                const rawVideoUrl = videoData.play || videoData.wmplay || videoData.hdplay;
+                const title = videoData.title || 'TikTok_Video';
+
+                if (rawVideoUrl) {
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
+                        titulo: title
+                    });
+                }
+            }
+        } catch (err) {
+            console.log(`Intento TikTok Key [${i + 1}] falló:`, err.message);
         }
-
-        return res.status(400).json({
-            exito: false,
-            mensaje: 'No se pudo extraer el enlace del video. Revisa que el enlace sea válido.'
-        });
-
-    } catch (err) {
-        console.error('Error en procesarTikTok SSSTik:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar el enlace de TikTok.' });
     }
+
+    return res.status(400).json({
+        exito: false,
+        mensaje: 'No se pudo obtener el video de TikTok. Intenta nuevamente.'
+    });
 }
 
 // ==========================================
