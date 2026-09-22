@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ==========================================
-// LISTA Y ROTACIÓN DE LAS 6 API KEYS (SPOTIFY)
+// LISTA Y ROTACIÓN DE LAS API KEYS (SPOTIFY)
 // ==========================================
 const API_KEYS = [
     '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038',
@@ -55,7 +55,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// Proxy para forzar descarga directa
+// Proxy de descarga directa
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
     let fileName = req.query.name || 'archivo_media';
@@ -171,31 +171,54 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. PROCESAR TIKTOK (Soporte directo para vt.tiktok.com)
+// 2. PROCESAR TIKTOK
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
         const cleanUrl = inputUrl.trim();
 
-        // Intento 1: API Directa de TikWM (Soporta vt.tiktok.com directamente sin expandir previamente)
+        // Intento 1: API de Cobalt (Soporte nativo para enlaces acortados vt.tiktok.com)
         try {
-            const response = await fetch('https://www.tikwm.com/api/', {
+            const cobaltRes = await fetch('https://api.cobalt.tools/api/json', {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
-                body: new URLSearchParams({
+                body: JSON.stringify({
                     url: cleanUrl,
-                    count: 12,
-                    cursor: 0,
-                    web: 1,
-                    hd: 1
+                    vCodec: 'h264',
+                    isNoWatermark: true
                 })
             });
 
-            if (response.ok) {
-                const data = await response.json();
+            if (cobaltRes.ok) {
+                const cobaltData = await cobaltRes.json();
+                if (cobaltData.url) {
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(cobaltData.url)}&name=TikTok_Video.mp4`;
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
+                        titulo: 'TikTok Video'
+                    });
+                }
+            }
+        } catch (e) {
+            console.log('Error Intento 1 Cobalt:', e.message);
+        }
+
+        // Intento 2: API de TikWM por GET
+        try {
+            const tikwmRes = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}&hd=1`, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+            });
+
+            if (tikwmRes.ok) {
+                const data = await tikwmRes.json();
                 if (data.code === 0 && data.data) {
                     const videoLink = data.data.hdplay || data.data.play;
                     const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
@@ -210,45 +233,34 @@ async function procesarTikTok(inputUrl, res) {
                 }
             }
         } catch (e) {
-            console.log('Error Intento 1 TikWM:', e.message);
+            console.log('Error Intento 2 TikWM:', e.message);
         }
 
-        // Intento 2: API de SSSTik (vía consulta web)
+        // Intento 3: API pública de Delirius
         try {
-            const ssstikRes = await fetch('https://ssstik.io/abc?url=dl', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-                },
-                body: new URLSearchParams({
-                    id: cleanUrl,
-                    locale: 'es',
-                    tt: '0'
-                })
-            });
-
-            if (ssstikRes.ok) {
-                const html = await ssstikRes.text();
-                const videoMatch = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || html.match(/href="(https:\/\/tikcdn\.io\/[^"]+)"/i);
-                
-                if (videoMatch && videoMatch[1]) {
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoMatch[1])}&name=TikTok_Video.mp4`;
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: 'TikTok Video'
-                    });
+            const deliriusRes = await fetch(`https://deliriussapi-official.vercel.app/download/tiktok?url=${encodeURIComponent(cleanUrl)}`);
+            if (deliriusRes.ok) {
+                const deliriusData = await deliriusRes.json();
+                if (deliriusData.status && deliriusData.data) {
+                    const videoUrl = deliriusData.data.meta.media.find(m => m.type === 'video')?.org || deliriusData.data.meta.media[0]?.org;
+                    if (videoUrl) {
+                        const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
+                        return res.json({
+                            exito: true,
+                            videoUrlHD: proxyUrl,
+                            videoUrl: proxyUrl,
+                            titulo: deliriusData.data.title || 'TikTok Video'
+                        });
+                    }
                 }
             }
         } catch (e) {
-            console.log('Error Intento 2 SSSTik:', e.message);
+            console.log('Error Intento 3 Delirius:', e.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo procesar este enlace de TikTok. Por favor verifica el enlace e intenta de nuevo.'
+            mensaje: 'No se pudo procesar este enlace de TikTok. Por favor intenta con el enlace completo desde la web.'
         });
 
     } catch (err) {
