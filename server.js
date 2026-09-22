@@ -157,7 +157,7 @@ async function procesarSpotify(input, res) {
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'Límite de descargas de Spotify alcanzado temporalmente.'
+            mensaje: 'Límite de descargas de Spotify alcanzado por hoy. Inténtalo de nuevo mañana.'
         });
 
     } catch (e) {
