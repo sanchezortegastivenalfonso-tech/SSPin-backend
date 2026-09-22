@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // ==========================================
-// ROTACIÓN DE API KEYS (SPOTIFY)
+// 1. ROTACIÓN DE API KEYS (SPOTIFY)
 // ==========================================
 const API_KEYS = [
     '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038',
@@ -30,7 +30,7 @@ app.use(express.json());
 app.use(express.static(__dirname));
 
 // ==========================================
-// ENDPOINT PRINCIPAL
+// ENDPOINT PRINCIPAL: /api/descargar
 // ==========================================
 app.post('/api/descargar', async (req, res) => {
     let { url, plataforma } = req.body;
@@ -97,68 +97,115 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 2. LÓGICA TIKTOK (SIN ERROR 403 EN RENDER)
+// 1. LÓGICA SPOTIFY
 // ==========================================
-async function procesarTikTok(url, res) {
+async function procesarSpotify(input, res) {
     try {
-        // 1. Si es enlace corto (vt.tiktok.com), resolvemos la URL final primero
-        let finalUrl = url;
-        if (url.includes('vt.tiktok.com') || url.includes('vm.tiktok.com')) {
+        const match = input.match(/track\/([a-zA-Z0-9]+)/);
+        if (!match) {
+            return res.status(400).json({ exito: false, mensaje: 'URL de Spotify no válida.' });
+        }
+        const trackId = match[1];
+        const cleanUrl = `https://open.spotify.com/track/${trackId}`;
+
+        let trackTitle = 'Canción de Spotify';
+        let artistName = '';
+        let coverImage = '';
+
+        try {
+            const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
+            if (oembedRes.data) {
+                trackTitle = oembedRes.data.title || trackTitle;
+                artistName = oembedRes.data.author_name || '';
+                coverImage = oembedRes.data.thumbnail_url || '';
+            }
+        } catch (e) {
+            console.log('Error oembed:', e.message);
+        }
+
+        const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
+
+        for (let i = 0; i < API_KEYS.length; i++) {
+            const currentApiKey = getNextApiKey();
+
             try {
-                const headRes = await axios.get(url, {
-                    maxRedirects: 5,
+                const rapidRes = await axios.get(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+                        'x-rapidapi-key': currentApiKey,
+                        'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
                     }
                 });
-                finalUrl = headRes.request.res.responseUrl || url;
-            } catch (e) {
-                // Si falla la redirección previa, intentamos con la URL original
-                finalUrl = url;
+
+                if (rapidRes.data) {
+                    const audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.url;
+
+                    if (audioUrl) {
+                        const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
+
+                        return res.json({
+                            exito: true,
+                            titulo: titleCombined,
+                            coverUrl: coverImage || rapidRes.data.data?.cover,
+                            audioUrl: directDownloadProxyUrl
+                        });
+                    }
+                }
+            } catch (err) {
+                console.log(`Intento Spotify Key [${i + 1}] falló:`, err.message);
             }
         }
 
-        // 2. Petición POST simulando formulario web (evita el bloqueo 403 de Cloudflare)
-        const formData = new URLSearchParams();
-        formData.append('url', finalUrl);
-        formData.append('count', 12);
-        formData.append('cursor', 0);
-        formData.append('web', 1);
-        formData.append('hd', 1);
+        return res.status(400).json({
+            exito: false,
+            mensaje: 'Límite de descargas de Spotify alcanzado temporalmente.'
+        });
 
-        const response = await axios.post('https://www.tikwm.com/api/', formData, {
+    } catch (e) {
+        console.error('Error procesando Spotify:', e.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar Spotify.' });
+    }
+}
+
+// ==========================================
+// 2. LÓGICA TIKTOK (REESTRUCTURADA CON AXIOS)
+// ==========================================
+async function procesarTikTok(url, res) {
+    try {
+        // Petición a SSSTik mediante AXIOS
+        const params = new URLSearchParams();
+        params.append('id', url);
+        params.append('locale', 'es');
+        params.append('tt', '0');
+
+        const response = await axios.post('https://ssstik.io/abc?url=dl', params, {
             headers: {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'Accept': 'application/json, text/javascript, */*; q=0.01',
-                'X-Requested-With': 'XMLHttpRequest',
-                'Origin': 'https://www.tikwm.com',
-                'Referer': 'https://www.tikwm.com/'
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Origin': 'https://ssstik.io',
+                'Referer': 'https://ssstik.io/es'
             }
         });
 
-        const data = response.data;
+        const html = response.data;
+        const linkMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*download_link/i) || html.match(/href="(https:\/\/[^"]+)"/i);
 
-        if (data && data.code === 0 && data.data) {
-            const rawVideoUrl = data.data.hdplay || data.data.play;
-            const videoTitle = data.data.title || 'TikTok_Video';
-
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(videoTitle)}.mp4`;
+        if (linkMatch && linkMatch[1]) {
+            const rawVideoUrl = linkMatch[1];
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
 
             return res.json({
                 exito: true,
                 videoUrlHD: proxyUrl,
                 videoUrl: proxyUrl,
-                downloadUrl: proxyUrl,
-                titulo: videoTitle
+                titulo: 'TikTok Video'
             });
         }
 
-        return res.status(400).json({ exito: false, mensaje: 'No se pudo obtener el vídeo de TikTok.' });
+        return res.status(400).json({ exito: false, mensaje: 'No se pudo extraer el enlace del video.' });
 
     } catch (err) {
-        console.error('Error TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar TikTok.' });
+        console.error('Error procesando TikTok:', err.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar TikTok.' });
     }
 }
 
