@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "postinstall": "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o ./yt-dlp && chmod +x ./yt-dlp"
-  },
+  }
   "dependencies": {
     "@tobyg74/tiktok-api-dl": "^1.2.0",
     "axios": "^1.7.0",
