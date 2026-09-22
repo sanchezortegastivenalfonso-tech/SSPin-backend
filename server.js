@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const axios = require('axios');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -29,7 +30,7 @@ app.use(express.json());
 app.use(express.static(__dirname));
 
 // ==========================================
-// ENDPOINT PRINCIPAL
+// ENDPOINT PRINCIPAL: /api/descargar
 // ==========================================
 app.post('/api/descargar', async (req, res) => {
     let { url, plataforma } = req.body;
@@ -68,17 +69,14 @@ app.get('/api/download-file', async (req, res) => {
     }
 
     try {
-        const response = await fetch(fileUrl, {
+        const response = await axios.get(fileUrl, {
+            responseType: 'arraybuffer',
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
         });
 
-        if (!response.ok) {
-            return res.status(500).send('Error al obtener el archivo fuente');
-        }
-
-        const contentType = response.headers.get('content-type') || 'application/octet-stream';
+        const contentType = response.headers['content-type'] || 'application/octet-stream';
         
         if (!fileName.includes('.')) {
             if (contentType.includes('audio') || contentType.includes('mpeg')) {
@@ -90,10 +88,8 @@ app.get('/api/download-file', async (req, res) => {
 
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
         res.setHeader('Content-Type', contentType);
+        res.send(Buffer.from(response.data));
 
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        res.send(buffer);
     } catch (error) {
         console.error('Error proxy descarga:', error.message);
         res.status(500).send('Error al procesar la descarga directa');
@@ -117,12 +113,11 @@ async function procesarSpotify(input, res) {
         let coverImage = '';
 
         try {
-            const oembedRes = await fetch(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
-            if (oembedRes.ok) {
-                const oembedData = await oembedRes.json();
-                trackTitle = oembedData.title || trackTitle;
-                artistName = oembedData.author_name || '';
-                coverImage = oembedData.thumbnail_url || '';
+            const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
+            if (oembedRes.data) {
+                trackTitle = oembedRes.data.title || trackTitle;
+                artistName = oembedRes.data.author_name || '';
+                coverImage = oembedRes.data.thumbnail_url || '';
             }
         } catch (e) {
             console.log('Error oembed:', e.message);
@@ -134,17 +129,15 @@ async function procesarSpotify(input, res) {
             const currentApiKey = getNextApiKey();
 
             try {
-                const rapidRes = await fetch(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
-                    method: 'GET',
+                const rapidRes = await axios.get(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
                     headers: {
                         'x-rapidapi-key': currentApiKey,
                         'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
                     }
                 });
 
-                if (rapidRes.ok) {
-                    const rapidData = await rapidRes.json();
-                    const audioUrl = rapidData.data?.downloadLink || rapidData.downloadLink || rapidData.url;
+                if (rapidRes.data) {
+                    const audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.url;
 
                     if (audioUrl) {
                         const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
@@ -152,7 +145,7 @@ async function procesarSpotify(input, res) {
                         return res.json({
                             exito: true,
                             titulo: titleCombined,
-                            coverUrl: coverImage || rapidData.data?.cover,
+                            coverUrl: coverImage || rapidRes.data.data?.cover,
                             audioUrl: directDownloadProxyUrl
                         });
                     }
@@ -174,66 +167,44 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (SOPORTE TOTAL VT.TIKTOK)
+// 2. LÓGICA TIKTOK (ROBUSTA CON AXIOS)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        // Limpieza de espacios y eliminación de la diagonal final si existe
-        let cleanUrl = inputUrl.trim().replace(/\/$/, '');
+        let cleanUrl = inputUrl.trim();
 
-        // Petición a la API con soporte nativo de enlaces vt.tiktok.com
-        const params = new URLSearchParams();
-        params.append('url', cleanUrl);
-        params.append('hd', '1');
-
-        const apiRes = await fetch('https://www.tikwm.com/api/', {
-            method: 'POST',
+        // Petición POST con Axios a TikWM
+        const response = await axios.post('https://www.tikwm.com/api/', new URLSearchParams({
+            url: cleanUrl,
+            hd: '1'
+        }), {
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             },
-            body: params.toString()
+            timeout: 10000
         });
 
-        if (apiRes.ok) {
-            const data = await apiRes.json();
+        const data = response.data;
 
-            if (data && data.code === 0 && data.data) {
-                const rawVideoUrl = data.data.hdplay || data.data.play;
-                const title = data.data.title || 'TikTok_Video';
+        if (data && data.code === 0 && data.data) {
+            const rawVideoUrl = data.data.hdplay || data.data.play;
+            const title = data.data.title || 'TikTok_Video';
 
-                const fullVideoUrl = rawVideoUrl.startsWith('http') ? rawVideoUrl : `https://www.tikwm.com${rawVideoUrl}`;
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(fullVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+            const fullVideoUrl = rawVideoUrl.startsWith('http') ? rawVideoUrl : `https://www.tikwm.com${rawVideoUrl}`;
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(fullVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
 
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: title
-                });
-            }
-        }
-
-        // Si el método directo falla, probamos con la API alternativa de respaldo
-        const fallbackRes = await fetch(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(cleanUrl)}`);
-        if (fallbackRes.ok) {
-            const fbData = await fallbackRes.json();
-            if (fbData && fbData.video && fbData.video.noWatermark) {
-                const title = fbData.title || 'TikTok_Video';
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(fbData.video.noWatermark)}&name=${encodeURIComponent(title)}.mp4`;
-
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: title
-                });
-            }
+            return res.json({
+                exito: true,
+                videoUrlHD: proxyUrl,
+                videoUrl: proxyUrl,
+                titulo: title
+            });
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo procesar este enlace de TikTok. Asegúrate de que sea público.'
+            mensaje: data.msg || 'No se pudo obtener el video de TikTok. Verifica el enlace.'
         });
 
     } catch (err) {
@@ -247,17 +218,13 @@ async function procesarTikTok(inputUrl, res) {
 // ==========================================
 async function procesarPinterest(inputUrl, res) {
     try {
-        const response = await fetch(inputUrl, {
+        const response = await axios.get(inputUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
         });
 
-        if (!response.ok) {
-            return res.status(400).json({ exito: false, mensaje: 'No se pudo acceder a Pinterest.' });
-        }
-
-        const html = await response.text();
+        const html = response.data;
 
         const videoMatch = html.match(/https:\/\/[^"]+\.mp4/gi) || 
                            html.match(/"video_list":\{"V_720P":\{"url":"(https?:\/\/[^"]+)"/i) ||
