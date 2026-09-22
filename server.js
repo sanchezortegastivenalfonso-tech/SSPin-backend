@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // ==========================================
-// 1. ROTACIÓN DE API KEYS (SPOTIFY Y TIKTOK)
+// 1. ROTACIÓN DE API KEYS (SPOTIFY)
 // ==========================================
 const API_KEYS = [
     '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038',
@@ -167,47 +167,75 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (VÍA RAPIDAPI - ANTI 403)
+// 2. LÓGICA TIKTOK (INSTANCIA COBALT / TIKWM DIRECTA)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     let cleanUrl = inputUrl.trim();
 
-    for (let i = 0; i < API_KEYS.length; i++) {
-        const currentApiKey = getNextApiKey();
+    // Opción 1: API Cobalt.tools (Pública y libre de 403)
+    try {
+        const cobaltRes = await axios.post('https://cobalt-api.koyeb.app/', {
+            url: cleanUrl,
+            videoQuality: 'max'
+        }, {
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            },
+            timeout: 10000
+        });
 
-        try {
-            const response = await axios.get('https://tiktok-download-without-watermark.p.rapidapi.com/analysis', {
-                params: { url: cleanUrl },
-                headers: {
-                    'x-rapidapi-key': currentApiKey,
-                    'x-rapidapi-host': 'tiktok-download-without-watermark.p.rapidapi.com'
-                },
-                timeout: 10000
+        if (cobaltRes.data && cobaltRes.data.url) {
+            const rawVideoUrl = cobaltRes.data.url;
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
+
+            return res.json({
+                exito: true,
+                videoUrlHD: proxyUrl,
+                videoUrl: proxyUrl,
+                titulo: 'TikTok Video'
             });
-
-            if (response.data && response.data.data) {
-                const videoData = response.data.data;
-                const rawVideoUrl = videoData.play || videoData.wmplay || videoData.hdplay;
-                const title = videoData.title || 'TikTok_Video';
-
-                if (rawVideoUrl) {
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: title
-                    });
-                }
-            }
-        } catch (err) {
-            console.log(`Intento TikTok Key [${i + 1}] falló:`, err.message);
         }
+    } catch (e1) {
+        console.log('Falló Cobalt:', e1.message);
+    }
+
+    // Opción 2: TikWM vía POST directo
+    try {
+        const formData = new URLSearchParams();
+        formData.append('url', cleanUrl);
+        formData.append('hd', '1');
+
+        const tikwmRes = await axios.post('https://www.tikwm.com/api/', formData, {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+            },
+            timeout: 10000
+        });
+
+        if (tikwmRes.data && tikwmRes.data.data) {
+            const videoData = tikwmRes.data.data;
+            const rawVideoUrl = videoData.hdplay || videoData.play;
+            const title = videoData.title || 'TikTok_Video';
+
+            if (rawVideoUrl) {
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: title
+                });
+            }
+        }
+    } catch (e2) {
+        console.log('Falló TikWM POST:', e2.message);
     }
 
     return res.status(400).json({
         exito: false,
-        mensaje: 'No se pudo obtener el video de TikTok. Intenta nuevamente.'
+        mensaje: 'No se pudo obtener el video de TikTok. Intenta con otra URL.'
     });
 }
 
