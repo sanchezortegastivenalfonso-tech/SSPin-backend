@@ -169,45 +169,57 @@ async function procesarSpotify(input, res) {
 // ==========================================
 // 2. LÓGICA TIKTOK (MÉTODO NATIVO DIRECTO)
 // ==========================================
-async function procesarTikTok(inputUrl, res) {
-    let cleanUrl = inputUrl.trim();
-
+async function procesarTikTok(url, res) {
     try {
-        const tikwmRes = await axios({
-            method: 'post',
-            url: 'https://www.tikwm.com/api/',
+        const response = await fetch(`https://api.tikdrop.io/api/download?url=${encodeURIComponent(url)}`, {
             headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
-            data: `url=${encodeURIComponent(cleanUrl)}&hd=1`
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://tikdrop.io/'
+            }
         });
 
-        if (tikwmRes.data && tikwmRes.data.code === 0) {
-            const videoData = tikwmRes.data.data;
-            const rawVideoUrl = videoData.play || videoData.hdplay;
-            const title = videoData.title || 'TikTok_Video';
-
-            if (rawVideoUrl) {
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent('https://www.tikwm.com' + rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: title
-                });
+        if (!response.ok) {
+            // Respaldo secundario por si el primario falla
+            const backupRes = await fetch(`https://api.v2.tikwm.com/api/?url=${encodeURIComponent(url)}`, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
+            
+            if (backupRes.ok) {
+                const backupData = await backupRes.json();
+                if (backupData.code === 0 && backupData.data) {
+                    const videoLink = backupData.data.hdplay || backupData.data.play;
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: `/api/download-file?url=${encodeURIComponent(videoLink)}&title=TikTok_Video`,
+                        videoUrl: `/api/download-file?url=${encodeURIComponent(backupData.data.play)}&title=TikTok_Video`,
+                        titulo: backupData.data.title || 'TikTok Video'
+                    });
+                }
             }
+            return res.status(400).json({ exito: false, mensaje: 'No se pudo obtener el video de TikTok.' });
         }
-    } catch (e) {
-        console.log('Error TikWM:', e.message);
+
+        const data = await response.json();
+        const videoLink = data.url || data.video_url || data.play;
+
+        if (videoLink) {
+            return res.json({
+                exito: true,
+                videoUrlHD: `/api/download-file?url=${encodeURIComponent(videoLink)}&title=TikTok_Video`,
+                videoUrl: `/api/download-file?url=${encodeURIComponent(videoLink)}&title=TikTok_Video`,
+                titulo: data.title || 'TikTok Video'
+            });
+        }
+
+        return res.status(400).json({ exito: false, mensaje: 'No se encontró el enlace del video.' });
+
+    } catch (err) {
+        console.error('Error procesando TikTok:', err.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar TikTok.' });
     }
-
-    return res.status(400).json({
-        exito: false,
-        mensaje: 'No se pudo procesar el enlace de TikTok.'
-    });
 }
-
 // ==========================================
 // 3. LÓGICA PINTEREST
 // ==========================================
