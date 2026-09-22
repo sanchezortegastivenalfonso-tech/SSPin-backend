@@ -29,16 +29,30 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Resolver redirecciones cortas (vt.tiktok.com)
+// Función para limpiar y expandir enlaces cortos de TikTok (soporta esquema intent://)
 async function unshortenUrl(shortUrl) {
     try {
         const res = await fetch(shortUrl, {
             method: 'GET',
-            redirect: 'follow',
+            redirect: 'manual', // Control manual para capturar esquemas no-HTTP
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
         });
+
+        const locationHeader = res.headers.get('location');
+        if (locationHeader) {
+            // Si redirige a un esquema intent:// de Android, extraer el enlace de TikTok
+            if (locationHeader.startsWith('intent://')) {
+                const match = locationHeader.match(/S\.browser_fallback_url=([^;]+)/);
+                if (match && match[1]) {
+                    return decodeURIComponent(match[1]);
+                }
+            }
+            if (locationHeader.startsWith('http')) {
+                return locationHeader;
+            }
+        }
         return res.url || shortUrl;
     } catch (e) {
         console.log('Error expandiendo URL:', e.message);
@@ -72,7 +86,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// Proxy de descarga
+// Proxy de descarga directa
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
     let fileName = req.query.name || 'archivo_media';
@@ -189,26 +203,20 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. PROCESAR TIKTOK (Optimizada para Servidores Cloud)
+// 2. PROCESAR TIKTOK
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        const resolvedUrl = await unshortenUrl(inputUrl);
+        let resolvedUrl = await unshortenUrl(inputUrl);
 
-        // Método 1: API Directa en Formato Form-Data con User-Agent Móvil Real
+        // Limpieza extra: remover parámetros innecesarios de URL
+        if (resolvedUrl.includes('?')) {
+            resolvedUrl = resolvedUrl.split('?')[0];
+        }
+
+        // Método 1: API de TikWM por GET
         try {
-            const bodyData = new URLSearchParams();
-            bodyData.append('url', resolvedUrl);
-            bodyData.append('hd', '1');
-
-            const tikwmRes = await fetch('https://www.tikwm.com/api/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'TikTok 26.2.0 rv:262018 (iPhone; iOS 14.4.2; en_US) Cronet'
-                },
-                body: bodyData
-            });
+            const tikwmRes = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(resolvedUrl)}&hd=1`);
 
             if (tikwmRes.ok) {
                 const data = await tikwmRes.json();
@@ -226,62 +234,44 @@ async function procesarTikTok(inputUrl, res) {
                 }
             }
         } catch (e) {
-            console.log('Error Método 1 TikTok:', e.message);
+            console.log('Error Método 1 TikWM:', e.message);
         }
 
-        // Método 2: API de Loli
+        // Método 2: API de TikWM por POST con FormData
         try {
-            const loliRes = await fetch(`https://api.lolihuman.xyz/api/tiktok?apikey=9b257262ed075388c1b960a0&url=${encodeURIComponent(resolvedUrl)}`);
-            if (loliRes.ok) {
-                const loliData = await loliRes.json();
-                if (loliData.status === 200 && loliData.result) {
-                    const videoUrl = loliData.result.link || loliData.result.no_watermark;
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
+            const tikwmPostRes = await fetch('https://www.tikwm.com/api/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                },
+                body: new URLSearchParams({
+                    url: resolvedUrl,
+                    hd: 1
+                })
+            });
+
+            if (tikwmPostRes.ok) {
+                const data = await tikwmPostRes.json();
+                if (data.code === 0 && data.data) {
+                    const videoLink = data.data.hdplay || data.data.play;
+                    const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(finalVideoUrl)}&name=TikTok_Video.mp4`;
 
                     return res.json({
                         exito: true,
                         videoUrlHD: proxyUrl,
                         videoUrl: proxyUrl,
-                        titulo: loliData.result.title || 'TikTok Video'
+                        titulo: data.data.title || 'TikTok Video'
                     });
                 }
             }
         } catch (e) {
-            console.log('Error Método 2 TikTok:', e.message);
-        }
-
-        // Método 3: API RapidAPI con tus Claves Existentes
-        for (let i = 0; i < API_KEYS.length; i++) {
-            const key = getNextApiKey();
-            try {
-                const rapidTikTokRes = await fetch(`https://tiktok-downloader-download-tiktok-videos-without-watermark.p.rapidapi.com/index?url=${encodeURIComponent(resolvedUrl)}`, {
-                    headers: {
-                        'x-rapidapi-key': key,
-                        'x-rapidapi-host': 'tiktok-downloader-download-tiktok-videos-without-watermark.p.rapidapi.com'
-                    }
-                });
-
-                if (rapidTikTokRes.ok) {
-                    const rapidData = await rapidTikTokRes.json();
-                    const videoUrl = rapidData.video?.[0] || rapidData.play;
-                    if (videoUrl) {
-                        const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
-                        return res.json({
-                            exito: true,
-                            videoUrlHD: proxyUrl,
-                            videoUrl: proxyUrl,
-                            titulo: rapidData.description || 'TikTok Video'
-                        });
-                    }
-                }
-            } catch (e) {
-                console.log(`Error RapidAPI TikTok Key [${i + 1}]`);
-            }
+            console.log('Error Método 2 TikWM:', e.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo procesar este enlace de TikTok. Intenta con el enlace completo desde el navegador.'
+            mensaje: 'No se pudo obtener el video de TikTok.'
         });
 
     } catch (err) {
