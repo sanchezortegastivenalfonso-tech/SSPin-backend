@@ -170,10 +170,9 @@ async function procesarSpotify(input, res) {
     }
 }
 
-const { exec } = require('child_process');
 const axios = require('axios');
 
-// Resuelve URLs acortadas de TikTok
+// Resuelve URLs acortadas de TikTok (vt.tiktok.com)
 async function expandirUrlTikTok(shortUrl) {
     try {
         const response = await axios.get(shortUrl, {
@@ -195,7 +194,7 @@ async function expandirUrlTikTok(shortUrl) {
 }
 
 // ==========================================
-// PROCESAR TIKTOK (VÍA YT-DLP DIRECTO)
+// PROCESAR TIKTOK (VÍA LOVETIK API)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
@@ -206,45 +205,38 @@ async function procesarTikTok(inputUrl, res) {
             console.log('URL TikTok Expandida:', cleanUrl);
         }
 
-        // Ejecutar yt-dlp nativo sin peticiones a APIs externas bloqueadas
-        const cmd = `./yt-dlp -j --no-warnings "${cleanUrl}"`;
+        const params = new URLSearchParams();
+        params.append('query', cleanUrl);
 
-        exec(cmd, { timeout: 15000 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error('Error ejecutando yt-dlp:', error.message);
-                return res.status(400).json({
-                    exito: false,
-                    mensaje: 'No se pudo obtener el video de TikTok.'
-                });
-            }
-
-            try {
-                const info = JSON.parse(stdout);
-                const directVideo = info.url || (info.formats && info.formats[info.formats.length - 1]?.url);
-
-                if (directVideo) {
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(directVideo)}&name=TikTok_Video.mp4`;
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: info.title || 'TikTok Video'
-                    });
-                } else {
-                    return res.status(400).json({
-                        exito: false,
-                        mensaje: 'No se encontró enlace de video.'
-                    });
-                }
-            } catch (pErr) {
-                console.error('Error parseando JSON:', pErr.message);
-                return res.status(500).json({ exito: false, mensaje: 'Error al procesar la respuesta del video.' });
-            }
+        const response = await axios.post('https://lovetik.com/api/ajax/search', params, {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            timeout: 12000
         });
+
+        if (response.data && response.data.links && response.data.links.length > 0) {
+            const videoLink = response.data.links.find(l => l.ft === '1' || l.a === 'nowatermark') || response.data.links[0];
+            const directVideo = videoLink.a;
+
+            return res.json({
+                exito: true,
+                videoUrlHD: directVideo,
+                videoUrl: directVideo,
+                titulo: response.data.desc || 'TikTok Video'
+            });
+        } else {
+            return res.status(400).json({
+                exito: false,
+                mensaje: 'No se pudo obtener el video de TikTok.'
+            });
+        }
 
     } catch (err) {
         console.error('Error general TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la solicitud.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la solicitud de TikTok.' });
     }
 }
 // ==========================================
