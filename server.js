@@ -182,7 +182,7 @@ async function expandirUrlTikTok(shortUrl) {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
             }
         });
-        if (response.headers.location) {
+        if (response.headers && response.headers.location) {
             return response.headers.location.split('?')[0];
         }
     } catch (e) {
@@ -194,57 +194,86 @@ async function expandirUrlTikTok(shortUrl) {
 }
 
 // ==========================================
-// PROCESAR TIKTOK
+// PROCESAR TIKTOK (Anti-403)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
         let cleanUrl = inputUrl.trim();
 
-        // 1. Expandir vt.tiktok.com a URL completa
+        // 1. Expandir URL acortada
         if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
             cleanUrl = await expandirUrlTikTok(cleanUrl);
             console.log('URL TikTok Expandida:', cleanUrl);
         }
 
-        // 2. Consultar TikWM con la URL expandida
-        const tikwmRes = await axios.post('https://www.tikwm.com/api/', 
-            new URLSearchParams({
-                url: cleanUrl,
-                count: 12,
-                cursor: 0,
-                web: 1,
-                hd: 1
-            }), {
+        // 2. Intento 1: API Directa de TikWm con Headers de Navegador Real
+        try {
+            const formData = new URLSearchParams();
+            formData.append('url', cleanUrl);
+            formData.append('count', '12');
+            formData.append('cursor', '0');
+            formData.append('web', '1');
+            formData.append('hd', '1');
+
+            const tikwmRes = await axios.post('https://www.tikwm.com/api/', formData, {
                 headers: {
+                    'Accept': 'application/json, text/javascript, */*; q=0.01',
                     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124"',
+                    'Sec-Ch-Ua-Mobile': '?0',
+                    'Sec-Ch-Ua-Platform': '"Windows"',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
                 },
                 timeout: 10000
-            }
-        );
-
-        if (tikwmRes.data && tikwmRes.data.code === 0 && tikwmRes.data.data) {
-            const data = tikwmRes.data.data;
-            const videoLink = data.hdplay || data.play;
-            const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(finalVideoUrl)}&name=TikTok_Video.mp4`;
-
-            return res.json({
-                exito: true,
-                videoUrlHD: proxyUrl,
-                videoUrl: proxyUrl,
-                titulo: data.title || 'TikTok Video'
             });
+
+            if (tikwmRes.data && tikwmRes.data.code === 0 && tikwmRes.data.data) {
+                const data = tikwmRes.data.data;
+                const videoLink = data.hdplay || data.play;
+                const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(finalVideoUrl)}&name=TikTok_Video.mp4`;
+
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: data.title || 'TikTok Video'
+                });
+            }
+        } catch (e1) {
+            console.log('TikWM bloqueado/falló (403/timeout):', e1.message);
+        }
+
+        // 3. Intento 2 (Fallback): API Alternativa no restringida para Datacenters
+        try {
+            const altRes = await axios.get(`https://api.vkrnot.com/v2/tiktok?url=${encodeURIComponent(cleanUrl)}`, {
+                timeout: 10000
+            });
+
+            if (altRes.data && altRes.data.data) {
+                const mediaUrl = altRes.data.data.hdplay || altRes.data.data.play;
+                if (mediaUrl) {
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(mediaUrl)}&name=TikTok_Video.mp4`;
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
+                        titulo: altRes.data.data.title || 'TikTok Video'
+                    });
+                }
+            }
+        } catch (e2) {
+            console.log('API Fallback falló:', e2.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el video de TikTok. Intenta con un enlace normal.'
+            mensaje: 'No se pudo obtener el video. Verifica que la cuenta o video sea público.'
         });
 
     } catch (err) {
-        console.error('Error TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el enlace de TikTok.' });
+        console.error('Error TikTok general:', err.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la solicitud.' });
     }
 }
 // ==========================================
