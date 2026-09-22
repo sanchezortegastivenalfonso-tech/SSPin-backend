@@ -167,72 +167,89 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (DESENROSCAR ENLACE CORTO + TIKWM)
+// 2. LÓGICA TIKTOK (MULTI-PROVEEDOR ANTI-403)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
+    let cleanUrl = inputUrl.trim();
+
+    // Opción A: API Delirius (Especializada en servidores en la nube)
     try {
-        let cleanUrl = inputUrl.trim();
-
-        // 1. Expandir enlace corto si viene como vt.tiktok.com o vm.tiktok.com
-        if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
-            try {
-                const headRes = await axios.get(cleanUrl, {
-                    maxRedirects: 5,
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                    }
-                });
-                if (headRes.request && headRes.request.res && headRes.request.res.responseUrl) {
-                    cleanUrl = headRes.request.res.responseUrl;
-                }
-            } catch (redirErr) {
-                if (redirErr.response && redirErr.response.request && redirErr.response.request.res) {
-                    cleanUrl = redirErr.response.request.res.responseUrl || cleanUrl;
-                }
-            }
-        }
-
-        // Limpiar parámetros query innecesarios
-        cleanUrl = cleanUrl.split('?')[0];
-
-        // 2. Hacer la solicitud a TikWM
-        const response = await axios.post('https://www.tikwm.com/api/', new URLSearchParams({
-            url: cleanUrl,
-            hd: '1'
-        }), {
+        const deliriusRes = await axios.get(`https://deliriussapi-official.vercel.app/download/tiktok?url=${encodeURIComponent(cleanUrl)}`, {
             headers: {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
             },
-            timeout: 10000
+            timeout: 8000
         });
 
-        const data = response.data;
+        if (deliriusRes.data && deliriusRes.data.status && deliriusRes.data.data) {
+            const media = deliriusRes.data.data.meta?.media || [];
+            const videoObj = media.find(m => m.type === 'video') || media[0];
+            const rawVideoUrl = videoObj?.org || videoObj?.url;
+            const title = deliriusRes.data.data.title || 'TikTok_Video';
 
-        if (data && data.code === 0 && data.data) {
-            const rawVideoUrl = data.data.hdplay || data.data.play;
-            const title = data.data.title || 'TikTok_Video';
+            if (rawVideoUrl) {
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: title
+                });
+            }
+        }
+    } catch (e1) {
+        console.log('Falló proveedor Delirius:', e1.message);
+    }
 
-            const fullVideoUrl = rawVideoUrl.startsWith('http') ? rawVideoUrl : `https://www.tikwm.com${rawVideoUrl}`;
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(fullVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+    // Opción B: API TiklyDown
+    try {
+        const tiklyRes = await axios.get(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(cleanUrl)}`, {
+            timeout: 8000
+        });
+
+        if (tiklyRes.data && tiklyRes.data.video) {
+            const rawVideoUrl = tiklyRes.data.video.noWatermark || tiklyRes.data.video.watermark;
+            const title = tiklyRes.data.title || 'TikTok_Video';
+
+            if (rawVideoUrl) {
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: title
+                });
+            }
+        }
+    } catch (e2) {
+        console.log('Falló proveedor TiklyDown:', e2.message);
+    }
+
+    // Opción C: API LolHuman
+    try {
+        const lolRes = await axios.get(`https://api.lolhuman.xyz/api/tiktokwm?apikey=GataDios&url=${encodeURIComponent(cleanUrl)}`, {
+            timeout: 8000
+        });
+
+        if (lolRes.data && lolRes.data.result) {
+            const rawVideoUrl = lolRes.data.result;
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
 
             return res.json({
                 exito: true,
                 videoUrlHD: proxyUrl,
                 videoUrl: proxyUrl,
-                titulo: title
+                titulo: 'TikTok_Video'
             });
         }
-
-        return res.status(400).json({
-            exito: false,
-            mensaje: data.msg || 'No se pudo obtener el video de TikTok. Verifica el enlace.'
-        });
-
-    } catch (err) {
-        console.error('Error procesando TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar TikTok.' });
+    } catch (e3) {
+        console.log('Falló proveedor LolHuman:', e3.message);
     }
+
+    return res.status(400).json({
+        exito: false,
+        mensaje: 'No se pudo obtener el video de TikTok. Intenta nuevamente.'
+    });
 }
 
 // ==========================================
