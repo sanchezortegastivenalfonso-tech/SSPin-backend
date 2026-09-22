@@ -174,29 +174,14 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (API TIKWM DIRECTA)
+// 2. LÓGICA TIKTOK (SOPORTE TOTAL VT.TIKTOK)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        let cleanUrl = inputUrl.trim();
+        // Limpieza de espacios y eliminación de la diagonal final si existe
+        let cleanUrl = inputUrl.trim().replace(/\/$/, '');
 
-        // 1. Si viene un enlace acortado (vt.tiktok.com / vm.tiktok.com), se desglosa primero
-        if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
-            try {
-                const redirectRes = await fetch(cleanUrl, {
-                    method: 'GET',
-                    redirect: 'follow',
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                });
-                cleanUrl = redirectRes.url || cleanUrl;
-            } catch (e) {
-                console.log('Error desglosando URL corta:', e.message);
-            }
-        }
-
-        // 2. Petición directa a la API de TikWM
+        // Petición a la API con soporte nativo de enlaces vt.tiktok.com
         const params = new URLSearchParams();
         params.append('url', cleanUrl);
         params.append('hd', '1');
@@ -205,35 +190,50 @@ async function procesarTikTok(inputUrl, res) {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             },
             body: params.toString()
         });
 
-        if (!apiRes.ok) {
-            return res.status(400).json({ exito: false, mensaje: 'Respuesta no válida del servidor de TikTok.' });
+        if (apiRes.ok) {
+            const data = await apiRes.json();
+
+            if (data && data.code === 0 && data.data) {
+                const rawVideoUrl = data.data.hdplay || data.data.play;
+                const title = data.data.title || 'TikTok_Video';
+
+                const fullVideoUrl = rawVideoUrl.startsWith('http') ? rawVideoUrl : `https://www.tikwm.com${rawVideoUrl}`;
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(fullVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: title
+                });
+            }
         }
 
-        const data = await apiRes.json();
+        // Si el método directo falla, probamos con la API alternativa de respaldo
+        const fallbackRes = await fetch(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(cleanUrl)}`);
+        if (fallbackRes.ok) {
+            const fbData = await fallbackRes.json();
+            if (fbData && fbData.video && fbData.video.noWatermark) {
+                const title = fbData.title || 'TikTok_Video';
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(fbData.video.noWatermark)}&name=${encodeURIComponent(title)}.mp4`;
 
-        if (data && data.code === 0 && data.data) {
-            const rawVideoUrl = data.data.hdplay || data.data.play;
-            const title = data.data.title || 'TikTok_Video';
-
-            const fullVideoUrl = rawVideoUrl.startsWith('http') ? rawVideoUrl : `https://www.tikwm.com${rawVideoUrl}`;
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(fullVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
-
-            return res.json({
-                exito: true,
-                videoUrlHD: proxyUrl,
-                videoUrl: proxyUrl,
-                titulo: title
-            });
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: title
+                });
+            }
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: data.msg || 'No se pudo obtener el video de TikTok. Revisa que sea público.'
+            mensaje: 'No se pudo procesar este enlace de TikTok. Asegúrate de que sea público.'
         });
 
     } catch (err) {
