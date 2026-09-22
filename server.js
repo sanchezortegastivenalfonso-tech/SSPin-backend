@@ -170,97 +170,39 @@ async function procesarSpotify(input, res) {
     }
 }
 
-const fetch = (...args) => import('node-fetch').then(({ default: fetch }) => fetch(...args));
-
-// Resuelve URLs acortadas de TikTok (vt.tiktok.com)
-async function expandirUrlTikTok(shortUrl) {
-    try {
-        const response = await fetch(shortUrl, {
-            method: 'GET',
-            redirect: 'follow',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-        });
-        return response.url || shortUrl;
-    } catch (e) {
-        return shortUrl;
-    }
-}
-
 // ==========================================
-// PROCESAR TIKTOK (VERSIÓN ROBUSTA MULTI-API)
+// 2. PROCESAR TIKTOK (API ROBUSTA Y DIRECTA)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        let cleanUrl = inputUrl.trim();
+        const cleanUrl = inputUrl.trim();
 
-        if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
-            cleanUrl = await expandirUrlTikTok(cleanUrl);
-            console.log('URL TikTok Expandida:', cleanUrl);
-        }
+        // Método principal usando TikWM API
+        const response = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}&hd=1`);
+        
+        if (response.ok) {
+            const data = await response.json();
 
-        // Método 1: API Directa SSSTik
-        try {
-            const bodyParams = new URLSearchParams();
-            bodyParams.append('id', cleanUrl);
-            bodyParams.append('locale', 'es');
+            if (data && data.data) {
+                const rawVideoUrl = data.data.hdplay || data.data.play;
+                const videoTitle = data.data.title || 'TikTok_Video';
 
-            const sssRes = await fetch('https://ssstik.io/abc?url=dl', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Origin': 'https://ssstik.io',
-                    'Referer': 'https://ssstik.io/es'
-                },
-                body: bodyParams
-            });
+                if (rawVideoUrl) {
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(videoTitle)}.mp4`;
 
-            if (sssRes.ok) {
-                const html = await sssRes.text();
-                const videoMatch = html.match(/href="(https:\/\/[^"]+)" class="[^"]*download_link[^"]*"/);
-                
-                if (videoMatch && videoMatch[1]) {
-                    const videoUrl = videoMatch[1];
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&filename=TikTok_Video.mp4`;
-                    
                     return res.json({
                         exito: true,
                         videoUrlHD: proxyUrl,
                         videoUrl: proxyUrl,
-                        titulo: 'TikTok Video'
+                        titulo: videoTitle
                     });
                 }
             }
-        } catch (e1) {
-            console.log('Error Método 1 (SSSTik):', e1.message);
-        }
-
-        // Método 2: API Vies-Tiktok (Fallback)
-        try {
-            const apiRes = await fetch(`https://api.vies.dev/tiktok?url=${encodeURIComponent(cleanUrl)}`);
-            if (apiRes.ok) {
-                const data = await apiRes.json();
-                const directUrl = data.play || data.hdplay || data.download;
-
-                if (directUrl) {
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(directUrl)}&filename=TikTok_Video.mp4`;
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: data.title || 'TikTok Video'
-                    });
-                }
-            }
-        } catch (e2) {
-            console.log('Error Método 2 (Vies):', e2.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el video. Intenta de nuevo en un momento.'
+            mensaje: 'No se pudo obtener el video de TikTok. Verifica la URL.'
         });
 
     } catch (err) {
@@ -268,6 +210,7 @@ async function procesarTikTok(inputUrl, res) {
         return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar TikTok.' });
     }
 }
+
 // ==========================================
 // 3. PROCESAR PINTEREST
 // ==========================================
