@@ -213,66 +213,55 @@ async function procesarSpotify(input, res) {
     }
 }
 
-// ==========================================
-// 2. PROCESAR TIKTOK (Soporte Enlaces Cortos vt.tiktok.com)
+
+
+       // ==========================================
+// 2. PROCESAR TIKTOK (Optimizada para servidores en la nube como Render)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        let finalUrl = inputUrl;
-        
-        // Resolver redirección de enlaces acortados
+        const cleanUrl = inputUrl.trim();
+
+        // 1. Intento principal: API Tiklydown (Extrae links directos sin bloqueo de Render)
         try {
-            const redirectRes = await fetch(inputUrl, {
-                method: 'HEAD',
-                redirect: 'follow',
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                }
-            });
-            if (redirectRes.url) finalUrl = redirectRes.url;
-        } catch (e) {
-            console.log('No se pudo resolver redirección HEAD, usando URL directa.');
-        }
-
-        // Intento 1: API TikWM
-        const response = await fetch(`https://tikwm.com/api/?url=${encodeURIComponent(finalUrl)}`, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'application/json'
-            }
-        });
-        
-        const contentType = response.headers.get('content-type') || '';
-        
-        if (response.ok && contentType.includes('application/json')) {
-            const data = await response.json();
-            if (data.code === 0 && data.data) {
-                const videoHD = data.data.hdplay ? (data.data.hdplay.startsWith('http') ? data.data.hdplay : `https://tikwm.com${data.data.hdplay}`) : null;
-                const videoSD = data.data.play ? (data.data.play.startsWith('http') ? data.data.play : `https://tikwm.com${data.data.play}`) : null;
-                const mainVideo = videoHD || videoSD;
-
-                if (mainVideo) {
-                    const proxyHD = `/api/download-file?url=${encodeURIComponent(videoHD || mainVideo)}&name=TikTok_HD.mp4`;
-                    const proxySD = `/api/download-file?url=${encodeURIComponent(videoSD || mainVideo)}&name=TikTok_SD.mp4`;
-
+            const tiklyRes = await fetch(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(cleanUrl)}`);
+            if (tiklyRes.ok) {
+                const tiklyData = await tiklyRes.json();
+                const videoUrl = tiklyData.video?.noWatermark || tiklyData.video?.watermark;
+                
+                if (videoUrl) {
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
                     return res.json({
                         exito: true,
-                        videoUrlHD: proxyHD,
-                        videoUrl: proxySD,
-                        titulo: data.data.title || 'TikTok Video'
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
+                        titulo: tiklyData.title || 'TikTok Video'
                     });
                 }
             }
+        } catch (e) {
+            console.log('Servidor Tiklydown inactivo, pasando al secundario...');
         }
 
-        // Intento 2: API LoLHuman (Respaldo)
-        const altRes = await fetch(`https://api.lolhuman.xyz/api/tiktok?apikey=free&url=${encodeURIComponent(finalUrl)}`);
-        if (altRes.ok) {
-            const altData = await altRes.json();
-            if (altData.status === 200 && altData.result) {
-                const videoLink = altData.result.link || altData.result;
-                if (typeof videoLink === 'string' && videoLink.startsWith('http')) {
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoLink)}&name=TikTok_Video.mp4`;
+        // 2. Intento secundario: Cobalt Tools API
+        try {
+            const cobaltRes = await fetch('https://api.cobalt.tools/api/json', {
+                method: 'POST',
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36'
+                },
+                body: JSON.stringify({
+                    url: cleanUrl,
+                    videoQuality: '720'
+                })
+            });
+
+            if (cobaltRes.ok) {
+                const cobaltData = await cobaltRes.json();
+                if (cobaltData.url) {
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(cobaltData.url)}&name=TikTok_Video.mp4`;
                     return res.json({
                         exito: true,
                         videoUrlHD: proxyUrl,
@@ -281,37 +270,54 @@ async function procesarTikTok(inputUrl, res) {
                     });
                 }
             }
+        } catch (e) {
+            console.log('Servidor Cobalt inactivo, pasando al terciario...');
         }
 
-        // Intento 3: SSSTik
-        const ssstikRes = await fetch(`https://ssstik.io/abc?url=dl`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
-            body: new URLSearchParams({ id: finalUrl, locale: 'es', tt: '0' })
+        // 3. Intento terciario: TikWM con User-Agent móvil
+        try {
+            const tikwmRes = await fetch('https://www.tikwm.com/api/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+                },
+                body: new URLSearchParams({
+                    url: cleanUrl,
+                    count: 12,
+                    cursor: 0,
+                    web: 1,
+                    hd: 1
+                })
+            });
+
+            if (tikwmRes.ok) {
+                const tikwmData = await tikwmRes.json();
+                if (tikwmData.code === 0 && tikwmData.data) {
+                    const rawLink = tikwmData.data.hdplay || tikwmData.data.play;
+                    const finalLink = rawLink.startsWith('http') ? rawLink : `https://www.tikwm.com${rawLink}`;
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(finalLink)}&name=TikTok_Video.mp4`;
+
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
+                        titulo: tikwmData.data.title || 'TikTok Video'
+                    });
+                }
+            }
+        } catch (e) {
+            console.log('Error en TikWM');
+        }
+
+        return res.status(400).json({ 
+            exito: false, 
+            mensaje: 'No se pudo procesar este enlace de TikTok. Intenta con un enlace normal o reintenta en unos segundos.' 
         });
 
-        if (ssstikRes.ok) {
-            const html = await ssstikRes.text();
-            const linkMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*download_link/i) || html.match(/href="(https:\/\/[^"]+)"/i);
-            if (linkMatch && linkMatch[1]) {
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(linkMatch[1])}&name=TikTok_Video.mp4`;
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: 'TikTok Video'
-                });
-            }
-        }
-
-        return res.status(400).json({ exito: false, mensaje: 'No se pudo procesar este enlace de TikTok.' });
-
     } catch (err) {
-        console.error('Error TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar el video de TikTok.' });
+        console.error('Error procesando TikTok:', err.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error interno procesando el video de TikTok.' });
     }
 }
 
