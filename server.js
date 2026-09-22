@@ -170,67 +170,24 @@ async function procesarSpotify(input, res) {
     }
 }
 
-// Función para expandir enlaces cortos (vt.tiktok.com -> tiktok.com/@user/video/id)
-async function expandirUrlTikTok(shortUrl) {
-    try {
-        const response = await fetch(shortUrl, {
-            method: 'HEAD',
-            redirect: 'follow',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-            }
-        });
-        return response.url || shortUrl;
-    } catch (e) {
-        // Si falla HEAD, intentar con GET
-        try {
-            const resGet = await fetch(shortUrl, {
-                method: 'GET',
-                redirect: 'follow',
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-                }
-            });
-            return resGet.url || shortUrl;
-        } catch (err) {
-            return shortUrl;
-        }
-    }
-}
-
 // ==========================================
-// PROCESAR TIKTOK (Soporte Robusto)
+// PROCESAR TIKTOK (Soporte Multi-API para vt.tiktok.com)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        let cleanUrl = inputUrl.trim();
+        const cleanUrl = inputUrl.trim();
 
-        // 1. Si es enlace corto, resolver la URL real completa
-        if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
-            cleanUrl = await expandirUrlTikTok(cleanUrl);
-            // Limpiar parámetros query innecesarios
-            cleanUrl = cleanUrl.split('?')[0];
-        }
-
-        // Intento 1: API de TikWM por POST
+        // 1. Proveedor 1: TikWM API vía GET con User-Agent emulado
         try {
-            const response = await fetch('https://www.tikwm.com/api/', {
-                method: 'POST',
+            const resTikwm = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}&hd=1`, {
                 headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-                },
-                body: new URLSearchParams({
-                    url: cleanUrl,
-                    count: 12,
-                    cursor: 0,
-                    web: 1,
-                    hd: 1
-                })
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+                    'Accept': 'application/json, text/plain, */*'
+                }
             });
 
-            if (response.ok) {
-                const data = await response.json();
+            if (resTikwm.ok) {
+                const data = await resTikwm.json();
                 if (data.code === 0 && data.data) {
                     const videoLink = data.data.hdplay || data.data.play;
                     const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
@@ -245,23 +202,68 @@ async function procesarTikTok(inputUrl, res) {
                 }
             }
         } catch (e) {
-            console.log('Falló Intento 1 TikWM:', e.message);
+            console.log('Falló proveedor 1 (TikWM GET):', e.message);
         }
 
-        // Intento 2: API de SSSTik
+        // 2. Proveedor 2: API Delirius / tiktod
+        try {
+            const resDelirius = await fetch(`https://deliriussapi-official.vercel.app/download/tiktok?url=${encodeURIComponent(cleanUrl)}`);
+            if (resDelirius.ok) {
+                const dataDelirius = await resDelirius.json();
+                if (dataDelirius.status && dataDelirius.data) {
+                    const mediaList = dataDelirius.data.meta?.media || [];
+                    const videoObj = mediaList.find(m => m.type === 'video') || mediaList[0];
+                    const videoUrl = videoObj?.org || videoObj?.url;
+
+                    if (videoUrl) {
+                        const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
+                        return res.json({
+                            exito: true,
+                            videoUrlHD: proxyUrl,
+                            videoUrl: proxyUrl,
+                            titulo: dataDelirius.data.title || 'TikTok Video'
+                        });
+                    }
+                }
+            }
+        } catch (e) {
+            console.log('Falló proveedor 2 (Delirius):', e.message);
+        }
+
+        // 3. Proveedor 3: API Lovid / SaveTik
+        try {
+            const resLovid = await fetch(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(cleanUrl)}`);
+            if (resLovid.ok) {
+                const dataLovid = await resLovid.json();
+                const videoUrl = dataLovid.video?.noWatermark || dataLovid.video?.watermark;
+                if (videoUrl) {
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
+                        titulo: dataLovid.title || 'TikTok Video'
+                    });
+                }
+            }
+        } catch (e) {
+            console.log('Falló proveedor 3 (Tiklydown):', e.message);
+        }
+
+        // 4. Proveedor 4: SSSTik (Form POST)
         try {
             const ssstikRes = await fetch('https://ssstik.io/abc?url=dl', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
                 },
                 body: new URLSearchParams({ id: cleanUrl, locale: 'es', tt: '0' })
             });
 
             if (ssstikRes.ok) {
                 const html = await ssstikRes.text();
-                const linkMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*download_link/i) || html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i);
+                const linkMatch = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || html.match(/href="(https:\/\/tikcdn\.io\/[^"]+)"/i);
                 if (linkMatch && linkMatch[1]) {
                     const proxyUrl = `/api/download-file?url=${encodeURIComponent(linkMatch[1])}&name=TikTok_Video.mp4`;
                     return res.json({
@@ -273,17 +275,17 @@ async function procesarTikTok(inputUrl, res) {
                 }
             }
         } catch (e) {
-            console.log('Falló Intento 2 SSSTik:', e.message);
+            console.log('Falló proveedor 4 (SSSTik):', e.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo procesar este enlace de TikTok. Intenta copiar el enlace completo desde el navegador.'
+            mensaje: 'No se pudo obtener el video de TikTok. Intenta con un enlace normal o más tarde.'
         });
 
     } catch (err) {
-        console.error('Error TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar el video.' });
+        console.error('Error general TikTok:', err.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error interno en el servidor.' });
     }
 }
 // ==========================================
