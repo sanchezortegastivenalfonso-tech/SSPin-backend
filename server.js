@@ -170,10 +170,10 @@ async function procesarSpotify(input, res) {
     }
 }
 
-const { execFile } = require('child_process');
+const path = require('path');
 const axios = require('axios');
 
-// Resuelve enlaces cortos vt.tiktok.com
+// Resuelve URLs acortadas de TikTok (vt.tiktok.com)
 async function expandirUrlTikTok(shortUrl) {
     try {
         const response = await axios.get(shortUrl, {
@@ -195,7 +195,7 @@ async function expandirUrlTikTok(shortUrl) {
 }
 
 // ==========================================
-// PROCESAR TIKTOK VÍA YT-DLP NATIVO
+// PROCESAR TIKTOK (VERSIÓN ESTABLE)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
@@ -206,51 +206,63 @@ async function procesarTikTok(inputUrl, res) {
             console.log('URL TikTok Expandida:', cleanUrl);
         }
 
-        const ytDlpPath = path.join(__dirname, 'yt-dlp');
+        // Intento 1: TikWM API vía POST con Form-Data
+        try {
+            const formData = new URLSearchParams();
+            formData.append('url', cleanUrl);
+            formData.append('hd', '1');
 
-        // Ejecutar yt-dlp para extraer los enlaces directos sin descargar el archivo
-        const args = [
-            '--dump-json',
-            '--no-warnings',
-            cleanUrl
-        ];
+            const response = await axios.post('https://www.tikwm.com/api/', formData, {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                timeout: 10000
+            });
 
-        execFile(ytDlpPath, args, { timeout: 15000 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error('Error yt-dlp TikTok:', error.message);
-                return res.status(400).json({
-                    exito: false,
-                    mensaje: 'No se pudo procesar el enlace de TikTok.'
+            if (response.data && response.data.data) {
+                const data = response.data.data;
+                const videoUrl = data.hdplay || data.play;
+                const finalUrl = videoUrl.startsWith('http') ? videoUrl : `https://www.tikwm.com${videoUrl}`;
+
+                return res.json({
+                    exito: true,
+                    videoUrlHD: finalUrl,
+                    videoUrl: finalUrl,
+                    titulo: data.title || 'TikTok Video'
                 });
             }
+        } catch (e1) {
+            console.log('Intento 1 TikWM falló:', e1.message);
+        }
 
-            try {
-                const info = JSON.parse(stdout);
-                // Extraer la URL directa del video (MP3/MP4)
-                const directUrl = info.url || (info.formats && info.formats[info.formats.length - 1]?.url);
+        // Intento 2: Fallback API LoFi / Rapid Direct
+        try {
+            const responseAlt = await axios.get(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(cleanUrl)}`, {
+                timeout: 10000
+            });
 
-                if (directUrl) {
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: directUrl,
-                        videoUrl: directUrl,
-                        titulo: info.title || 'TikTok Video'
-                    });
-                } else {
-                    return res.status(400).json({
-                        exito: false,
-                        mensaje: 'No se encontró un enlace directo de video.'
-                    });
-                }
-            } catch (parseErr) {
-                console.error('Error al parsear JSON de yt-dlp:', parseErr.message);
-                return res.status(500).json({ exito: false, mensaje: 'Error al procesar la respuesta del video.' });
+            if (responseAlt.data && responseAlt.data.video) {
+                const videoUrl = responseAlt.data.video.noWatermark || responseAlt.data.video.watermark;
+                return res.json({
+                    exito: true,
+                    videoUrlHD: videoUrl,
+                    videoUrl: videoUrl,
+                    titulo: responseAlt.data.title || 'TikTok Video'
+                });
             }
+        } catch (e2) {
+            console.log('Intento 2 Tiklydown falló:', e2.message);
+        }
+
+        return res.status(400).json({
+            exito: false,
+            mensaje: 'No se pudo obtener el video. Inténtalo nuevamente.'
         });
 
     } catch (err) {
         console.error('Error general TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la solicitud.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la solicitud de TikTok.' });
     }
 }
 // ==========================================
