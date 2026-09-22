@@ -62,7 +62,7 @@ app.post('/api/descargar', async (req, res) => {
 // ==========================================
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
-    let fileName = req.query.name || 'archivo_media';
+    let fileName = req.query.name || req.query.filename || 'archivo_media';
 
     if (!fileUrl) {
         return res.status(400).send('URL no proporcionada');
@@ -167,59 +167,48 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (MÉTODO NATIVO DIRECTO)
+// 2. LÓGICA TIKTOK (REESTRUCTURADA CON AXIOS)
 // ==========================================
 async function procesarTikTok(url, res) {
     try {
-        const response = await fetch(`https://api.tikdrop.io/api/download?url=${encodeURIComponent(url)}`, {
+        // Petición a SSSTik mediante AXIOS
+        const params = new URLSearchParams();
+        params.append('id', url);
+        params.append('locale', 'es');
+        params.append('tt', '0');
+
+        const response = await axios.post('https://ssstik.io/abc?url=dl', params, {
             headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': 'https://tikdrop.io/'
+                'Origin': 'https://ssstik.io',
+                'Referer': 'https://ssstik.io/es'
             }
         });
 
-        if (!response.ok) {
-            // Respaldo secundario por si el primario falla
-            const backupRes = await fetch(`https://api.v2.tikwm.com/api/?url=${encodeURIComponent(url)}`, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                }
-            });
-            
-            if (backupRes.ok) {
-                const backupData = await backupRes.json();
-                if (backupData.code === 0 && backupData.data) {
-                    const videoLink = backupData.data.hdplay || backupData.data.play;
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: `/api/download-file?url=${encodeURIComponent(videoLink)}&title=TikTok_Video`,
-                        videoUrl: `/api/download-file?url=${encodeURIComponent(backupData.data.play)}&title=TikTok_Video`,
-                        titulo: backupData.data.title || 'TikTok Video'
-                    });
-                }
-            }
-            return res.status(400).json({ exito: false, mensaje: 'No se pudo obtener el video de TikTok.' });
-        }
+        const html = response.data;
+        const linkMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*download_link/i) || html.match(/href="(https:\/\/[^"]+)"/i);
 
-        const data = await response.json();
-        const videoLink = data.url || data.video_url || data.play;
+        if (linkMatch && linkMatch[1]) {
+            const rawVideoUrl = linkMatch[1];
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
 
-        if (videoLink) {
             return res.json({
                 exito: true,
-                videoUrlHD: `/api/download-file?url=${encodeURIComponent(videoLink)}&title=TikTok_Video`,
-                videoUrl: `/api/download-file?url=${encodeURIComponent(videoLink)}&title=TikTok_Video`,
-                titulo: data.title || 'TikTok Video'
+                videoUrlHD: proxyUrl,
+                videoUrl: proxyUrl,
+                titulo: 'TikTok Video'
             });
         }
 
-        return res.status(400).json({ exito: false, mensaje: 'No se encontró el enlace del video.' });
+        return res.status(400).json({ exito: false, mensaje: 'No se pudo extraer el enlace del video.' });
 
     } catch (err) {
         console.error('Error procesando TikTok:', err.message);
         return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar TikTok.' });
     }
 }
+
 // ==========================================
 // 3. LÓGICA PINTEREST
 // ==========================================
