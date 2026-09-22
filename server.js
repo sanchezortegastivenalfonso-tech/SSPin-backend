@@ -5,7 +5,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 // ==========================================
-// 1. LISTA Y ROTACIÓN DE API KEYS (SPOTIFY)
+// 1. ROTACIÓN DE API KEYS (SPOTIFY)
 // ==========================================
 const API_KEYS = [
     '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038',
@@ -28,24 +28,8 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Función para desglosar enlaces acortados (vt.tiktok.com)
-async function desglosarUrl(shortUrl) {
-    try {
-        const response = await fetch(shortUrl, {
-            method: 'GET',
-            redirect: 'follow',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-        });
-        return response.url || shortUrl;
-    } catch (e) {
-        return shortUrl;
-    }
-}
-
 // ==========================================
-// ENDPOINT PRINCIPAL: /api/descargar
+// ENDPOINT PRINCIPAL
 // ==========================================
 app.post('/api/descargar', async (req, res) => {
     let { url, plataforma } = req.body;
@@ -190,102 +174,66 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (MULTI-API EN CASCADA)
+// 2. LÓGICA TIKTOK (API TIKWM DIRECTA)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        // Expandir URL corta si llega vt.tiktok.com
         let cleanUrl = inputUrl.trim();
+
+        // 1. Si viene un enlace acortado (vt.tiktok.com / vm.tiktok.com), se desglosa primero
         if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
-            cleanUrl = await desglosarUrl(cleanUrl);
+            try {
+                const redirectRes = await fetch(cleanUrl, {
+                    method: 'GET',
+                    redirect: 'follow',
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                });
+                cleanUrl = redirectRes.url || cleanUrl;
+            } catch (e) {
+                console.log('Error desglosando URL corta:', e.message);
+            }
         }
 
-        // --- OPCIÓN 1: API de LovoTik ---
-        try {
-            const lovoRes = await fetch('https://lovetik.com/api/ajax/search', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-                body: new URLSearchParams({ query: cleanUrl })
-            });
+        // 2. Petición directa a la API de TikWM
+        const params = new URLSearchParams();
+        params.append('url', cleanUrl);
+        params.append('hd', '1');
 
-            if (lovoRes.ok) {
-                const lovoData = await lovoRes.json();
-                if (lovoData && lovoData.links && lovoData.links.length > 0) {
-                    const directUrl = lovoData.links[0].a;
-                    const title = lovoData.desc || 'TikTok_Video';
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(title)}.mp4`;
+        const apiRes = await fetch('https://www.tikwm.com/api/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            body: params.toString()
+        });
 
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: title
-                    });
-                }
-            }
-        } catch (e) {
-            console.log('Falló Lovetik, intentando con SSSTIK...');
+        if (!apiRes.ok) {
+            return res.status(400).json({ exito: false, mensaje: 'Respuesta no válida del servidor de TikTok.' });
         }
 
-        // --- OPCIÓN 2: SSSTIK con URL ya desglosada ---
-        try {
-            const initRes = await fetch('https://ssstik.io/es', {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                }
+        const data = await apiRes.json();
+
+        if (data && data.code === 0 && data.data) {
+            const rawVideoUrl = data.data.hdplay || data.data.play;
+            const title = data.data.title || 'TikTok_Video';
+
+            const fullVideoUrl = rawVideoUrl.startsWith('http') ? rawVideoUrl : `https://www.tikwm.com${rawVideoUrl}`;
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(fullVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+
+            return res.json({
+                exito: true,
+                videoUrlHD: proxyUrl,
+                videoUrl: proxyUrl,
+                titulo: title
             });
-            const initHtml = await initRes.text();
-            const ttMatch = initHtml.match(/s_tt\s*=\s*["']([^"']+)["']/);
-            const ttToken = ttMatch ? ttMatch[1] : '';
-
-            const params = new URLSearchParams();
-            params.append('id', cleanUrl);
-            params.append('locale', 'es');
-            params.append('tt', ttToken);
-
-            const scrapeRes = await fetch('https://ssstik.io/abc?url=dl', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'hx-target': 'target',
-                    'hx-current-url': 'https://ssstik.io/es',
-                    'hx-request': 'true'
-                },
-                body: params.toString()
-            });
-
-            if (scrapeRes.ok) {
-                const htmlResult = await scrapeRes.text();
-                const downloadMatch = htmlResult.match(/href=["'](https:\/\/[^"']+)["'][^>]*class=["'][^"']*without_watermark/i) ||
-                                      htmlResult.match(/href=["'](https:\/\/tikcdn\.[^"']+)["']/i) ||
-                                      htmlResult.match(/href=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i);
-
-                const titleMatch = htmlResult.match(/<p class=["']maintext["']>([^<]+)<\/p>/i);
-                const title = titleMatch ? titleMatch[1].trim() : 'TikTok_Video';
-
-                if (downloadMatch && downloadMatch[1]) {
-                    const directVideoUrl = downloadMatch[1];
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(directVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
-
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: title
-                    });
-                }
-            }
-        } catch (e) {
-            console.log('Falló SSSTIK...');
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el video de TikTok. Verifica que el enlace sea público.'
+            mensaje: data.msg || 'No se pudo obtener el video de TikTok. Revisa que sea público.'
         });
 
     } catch (err) {
