@@ -24,14 +24,11 @@ function getNextApiKey() {
     return key;
 }
 
-// Configuración de Middlewares
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// ==========================================
-// ENDPOINT PRINCIPAL: /api/descargar
-// ==========================================
+// Endpoint Principal
 app.post('/api/descargar', async (req, res) => {
     let { url, plataforma } = req.body;
 
@@ -57,9 +54,7 @@ app.post('/api/descargar', async (req, res) => {
     }
 });
 
-// ==========================================
-// PROXY DE DESCARGA DIRECTA
-// ==========================================
+// Proxy de Descarga Directa
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
     let fileName = req.query.name || 'archivo_media';
@@ -175,142 +170,51 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// HELPER TIKTOK: RESOLVER URLS CORTAS
-// ==========================================
-async function resolverUrlCortaTikTok(shortUrl) {
-    try {
-        const response = await fetch(shortUrl, {
-            method: 'GET',
-            redirect: 'follow',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-        });
-        return response.url || shortUrl;
-    } catch (e) {
-        return shortUrl;
-    }
-}
-
-// ==========================================
-// 2. LÓGICA TIKTOK (SISTEMA TRIPLE RESPALDO)
+// 2. LÓGICA TIKTOK (API ULTRA COMPATIBLE)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        let cleanUrl = inputUrl.trim();
+        const formData = new URLSearchParams();
+        formData.append('url', inputUrl);
+        formData.append('hd', '1');
 
-        if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
-            cleanUrl = await resolverUrlCortaTikTok(cleanUrl);
-        }
+        const apiRes = await fetch('https://tikwm.com/api/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/javascript, */*; q=0.01'
+            },
+            body: formData.toString()
+        });
 
-        cleanUrl = cleanUrl.split('?')[0];
-
-        // --- OPCIÓN A: SSSTik ---
-        try {
-            const params = new URLSearchParams();
-            params.append('id', cleanUrl);
-            params.append('locale', 'es');
-            params.append('tt', 'RFZsS3A1');
-
-            const sssRes = await fetch('https://ssstik.io/abc?url=dl', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-                body: params
-            });
-
-            if (sssRes.ok) {
-                const html = await sssRes.text();
-                const downloadMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*download_link/i) || 
-                                      html.match(/href="(https:\/\/withoutwatermark[^"]+)"/i) ||
-                                      html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i);
-
-                if (downloadMatch && downloadMatch[1]) {
-                    const rawVideoUrl = downloadMatch[1];
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
-
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: 'TikTok Video'
-                    });
+        if (apiRes.ok) {
+            const data = await apiRes.json();
+            
+            if (data && data.code === 0 && data.data) {
+                let videoUrl = data.data.hdplay || data.data.play;
+                
+                if (videoUrl.startsWith('//')) {
+                    videoUrl = 'https:' + videoUrl;
+                } else if (!videoUrl.startsWith('http')) {
+                    videoUrl = 'https://www.tikwm.com' + videoUrl;
                 }
+
+                const tituloVideo = data.data.title || 'TikTok_Video';
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=${encodeURIComponent(tituloVideo)}.mp4`;
+
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: tituloVideo
+                });
             }
-        } catch (e) {
-            console.log('Fallo SSSTik, pasando a TikMate...', e.message);
-        }
-
-        // --- OPCIÓN B: TikMate ---
-        try {
-            const paramsTikmate = new URLSearchParams();
-            paramsTikmate.append('url', cleanUrl);
-
-            const tikmateRes = await fetch('https://api.tikmate.app/api/lookup', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-                body: paramsTikmate
-            });
-
-            if (tikmateRes.ok) {
-                const data = await tikmateRes.json();
-                if (data && data.success && data.token) {
-                    const rawVideoUrl = `https://tikmate.app/download/${data.token}/${data.id}.mp4`;
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
-
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: data.author_name ? `TikTok - ${data.author_name}` : 'TikTok Video'
-                    });
-                }
-            }
-        } catch (e) {
-            console.log('Fallo TikMate, pasando a LoveTik...', e.message);
-        }
-
-        // --- OPCIÓN C: LoveTik ---
-        try {
-            const paramsLoveTik = new URLSearchParams();
-            paramsLoveTik.append('query', cleanUrl);
-
-            const loveRes = await fetch('https://lovetik.com/api/ajax/search', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-                body: paramsLoveTik
-            });
-
-            if (loveRes.ok) {
-                const data = await loveRes.json();
-                if (data && data.status === 'ok' && data.links) {
-                    const videoOption = data.links.find(l => l.ft === '1') || data.links[0];
-                    if (videoOption && videoOption.a) {
-                        const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoOption.a)}&name=TikTok_Video.mp4`;
-                        return res.json({
-                            exito: true,
-                            videoUrlHD: proxyUrl,
-                            videoUrl: proxyUrl,
-                            titulo: data.desc || 'TikTok Video'
-                        });
-                    }
-                }
-            }
-        } catch (e) {
-            console.log('Fallo LoveTik:', e.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el video de TikTok. Inténtalo de nuevo.'
+            mensaje: 'No se pudo obtener el video de TikTok. Verifica la URL e inténtalo nuevamente.'
         });
 
     } catch (err) {
@@ -326,8 +230,7 @@ async function procesarPinterest(inputUrl, res) {
     try {
         const response = await fetch(inputUrl, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept-Language': 'es-ES,es;q=0.9'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
         });
 
@@ -362,5 +265,4 @@ async function procesarPinterest(inputUrl, res) {
     }
 }
 
-// Inicialización del Servidor
 app.listen(PORT, () => console.log(`Servidor activo en el puerto ${PORT}`));
