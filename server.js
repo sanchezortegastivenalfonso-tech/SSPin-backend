@@ -167,73 +167,66 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (COBALT API - SIN ERRORES 403)
+// 2. LÓGICA TIKTOK (DESENROSCAR ENLACE CORTO + TIKWM)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
         let cleanUrl = inputUrl.trim();
 
-        // Intento 1: Instancia principal de Cobalt API
-        try {
-            const response = await axios.post('https://api.cobalt.tools/api/json', {
-                url: cleanUrl,
-                vCodec: 'h264'
-            }, {
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                },
-                timeout: 12000
-            });
-
-            const data = response.data;
-
-            if (data && (data.status === 'stream' || data.status === 'redirect' || data.status === 'picker')) {
-                const rawVideoUrl = data.url || (data.picker && data.picker[0] ? data.picker[0].url : null);
-
-                if (rawVideoUrl) {
-                    const title = 'TikTok_Video';
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
-
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: title
-                    });
+        // 1. Expandir enlace corto si viene como vt.tiktok.com o vm.tiktok.com
+        if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
+            try {
+                const headRes = await axios.get(cleanUrl, {
+                    maxRedirects: 5,
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                });
+                if (headRes.request && headRes.request.res && headRes.request.res.responseUrl) {
+                    cleanUrl = headRes.request.res.responseUrl;
+                }
+            } catch (redirErr) {
+                if (redirErr.response && redirErr.response.request && redirErr.response.request.res) {
+                    cleanUrl = redirErr.response.request.res.responseUrl || cleanUrl;
                 }
             }
-        } catch (e1) {
-            console.log('Cobalt principal falló, intentando respaldo...', e1.message);
         }
 
-        // Intento 2: Instancia secundaria de Cobalt API
-        const backupResponse = await axios.post('https://co.wuk.sh/api/json', {
-            url: cleanUrl
-        }, {
+        // Limpiar parámetros query innecesarios
+        cleanUrl = cleanUrl.split('?')[0];
+
+        // 2. Hacer la solicitud a TikWM
+        const response = await axios.post('https://www.tikwm.com/api/', new URLSearchParams({
+            url: cleanUrl,
+            hd: '1'
+        }), {
             headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             },
-            timeout: 12000
+            timeout: 10000
         });
 
-        if (backupResponse.data && backupResponse.data.url) {
-            const rawVideoUrl = backupResponse.data.url;
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
+        const data = response.data;
+
+        if (data && data.code === 0 && data.data) {
+            const rawVideoUrl = data.data.hdplay || data.data.play;
+            const title = data.data.title || 'TikTok_Video';
+
+            const fullVideoUrl = rawVideoUrl.startsWith('http') ? rawVideoUrl : `https://www.tikwm.com${rawVideoUrl}`;
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(fullVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
 
             return res.json({
                 exito: true,
                 videoUrlHD: proxyUrl,
                 videoUrl: proxyUrl,
-                titulo: 'TikTok_Video'
+                titulo: title
             });
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el video de TikTok. Verifica que el enlace sea público.'
+            mensaje: data.msg || 'No se pudo obtener el video de TikTok. Verifica el enlace.'
         });
 
     } catch (err) {
