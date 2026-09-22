@@ -5,6 +5,9 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// URL base de tu backend en Render para evitar redirecciones relativas en Netlify
+const SERVER_URL = 'https://sspin-backend-0vj7.onrender.com';
+
 // ==========================================
 // 1. ROTACIÓN DE API KEYS (SPOTIFY)
 // ==========================================
@@ -97,7 +100,7 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA SPOTIFY (CON FALLBACK AUTOMÁTICO)
+// 1. LÓGICA SPOTIFY (CON FALLBACK AUTOMÁTICO Y URL ABSOLUTA)
 // ==========================================
 async function procesarSpotify(input, res) {
     try {
@@ -175,7 +178,7 @@ async function procesarSpotify(input, res) {
 
         // Si se obtuvo enlace de audio por cualquiera de las dos vías
         if (audioUrl) {
-            const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
+            const directDownloadProxyUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
 
             return res.json({
                 exito: true,
@@ -187,7 +190,7 @@ async function procesarSpotify(input, res) {
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No fue posible procesar la canción en este momento. Intenta más tarde.'
+            mensaje: 'Límite de descargas alcanzado temporalmente. Por favor intenta de nuevo en unas horas.'
         });
 
     } catch (e) {
@@ -197,11 +200,10 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (REESTRUCTURADA CON AXIOS)
+// 2. LÓGICA TIKTOK
 // ==========================================
 async function procesarTikTok(url, res) {
     try {
-        // Petición a SSSTik mediante AXIOS
         const params = new URLSearchParams();
         params.append('id', url);
         params.append('locale', 'es');
@@ -221,7 +223,7 @@ async function procesarTikTok(url, res) {
 
         if (linkMatch && linkMatch[1]) {
             const rawVideoUrl = linkMatch[1];
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
+            const proxyUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
 
             return res.json({
                 exito: true,
@@ -260,7 +262,7 @@ async function procesarPinterest(inputUrl, res) {
             let rawVideoUrl = videoMatch[0].replace(/\\/g, '');
             if (videoMatch[1]) rawVideoUrl = videoMatch[1].replace(/\\/g, '');
 
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=Pinterest_Video.mp4`;
+            const proxyUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=Pinterest_Video.mp4`;
 
             return res.json({
                 exito: true,
