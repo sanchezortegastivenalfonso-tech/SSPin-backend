@@ -171,19 +171,27 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// PROCESAR TIKTOK (Soporte Multi-API para vt.tiktok.com)
+// PROCESAR TIKTOK (Soporte seguro para vt.tiktok.com)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
         const cleanUrl = inputUrl.trim();
 
-        // 1. Proveedor 1: TikWM API vía GET con User-Agent emulado
+        // 1. Proveedor 1: API v2 de TikWM
         try {
-            const resTikwm = await fetch(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}&hd=1`, {
+            const resTikwm = await fetch('https://www.tikwm.com/api/', {
+                method: 'POST',
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-                    'Accept': 'application/json, text/plain, */*'
-                }
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                body: new URLSearchParams({
+                    url: cleanUrl,
+                    count: 12,
+                    cursor: 0,
+                    web: 1,
+                    hd: 1
+                })
             });
 
             if (resTikwm.ok) {
@@ -202,10 +210,10 @@ async function procesarTikTok(inputUrl, res) {
                 }
             }
         } catch (e) {
-            console.log('Falló proveedor 1 (TikWM GET):', e.message);
+            console.log('Falló proveedor 1 (TikWM):', e.message);
         }
 
-        // 2. Proveedor 2: API Delirius / tiktod
+        // 2. Proveedor 2: API Delirius (Soporta vt.tiktok.com)
         try {
             const resDelirius = await fetch(`https://deliriussapi-official.vercel.app/download/tiktok?url=${encodeURIComponent(cleanUrl)}`);
             if (resDelirius.ok) {
@@ -230,57 +238,31 @@ async function procesarTikTok(inputUrl, res) {
             console.log('Falló proveedor 2 (Delirius):', e.message);
         }
 
-        // 3. Proveedor 3: API Lovid / SaveTik
+        // 3. Proveedor 3: API Lovan (Fallback SSL Seguro)
         try {
-            const resLovid = await fetch(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(cleanUrl)}`);
-            if (resLovid.ok) {
-                const dataLovid = await resLovid.json();
-                const videoUrl = dataLovid.video?.noWatermark || dataLovid.video?.watermark;
-                if (videoUrl) {
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: dataLovid.title || 'TikTok Video'
-                    });
+            const resLovan = await fetch(`https://api.lovan.tech/api/tiktok?url=${encodeURIComponent(cleanUrl)}`);
+            if (resLovan.ok) {
+                const dataLovan = await resLovan.json();
+                if (dataLovan.status && dataLovan.result) {
+                    const videoUrl = dataLovan.result.hd || dataLovan.result.nowatermark || dataLovan.result.watermark;
+                    if (videoUrl) {
+                        const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
+                        return res.json({
+                            exito: true,
+                            videoUrlHD: proxyUrl,
+                            videoUrl: proxyUrl,
+                            titulo: dataLovan.result.title || 'TikTok Video'
+                        });
+                    }
                 }
             }
         } catch (e) {
-            console.log('Falló proveedor 3 (Tiklydown):', e.message);
-        }
-
-        // 4. Proveedor 4: SSSTik (Form POST)
-        try {
-            const ssstikRes = await fetch('https://ssstik.io/abc?url=dl', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-                },
-                body: new URLSearchParams({ id: cleanUrl, locale: 'es', tt: '0' })
-            });
-
-            if (ssstikRes.ok) {
-                const html = await ssstikRes.text();
-                const linkMatch = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || html.match(/href="(https:\/\/tikcdn\.io\/[^"]+)"/i);
-                if (linkMatch && linkMatch[1]) {
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(linkMatch[1])}&name=TikTok_Video.mp4`;
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: 'TikTok Video'
-                    });
-                }
-            }
-        } catch (e) {
-            console.log('Falló proveedor 4 (SSSTik):', e.message);
+            console.log('Falló proveedor 3 (Lovan):', e.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el video de TikTok. Intenta con un enlace normal o más tarde.'
+            mensaje: 'No se pudo procesar este enlace de TikTok. Intenta con un enlace completo.'
         });
 
     } catch (err) {
