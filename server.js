@@ -1,4 +1,4 @@
-const express = require('express');
+¿const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 
@@ -167,89 +167,68 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (MULTI-PROVEEDOR ANTI-403)
+// 2. LÓGICA TIKTOK (EXTRACTOR ROBUSTO SSSTIK)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     let cleanUrl = inputUrl.trim();
 
-    // Opción A: API Delirius (Especializada en servidores en la nube)
     try {
-        const deliriusRes = await axios.get(`https://deliriussapi-official.vercel.app/download/tiktok?url=${encodeURIComponent(cleanUrl)}`, {
+        // Obtenemos la página inicial de SSSTik para extraer los parámetros de sesión
+        const pageRes = await axios.get('https://ssstik.io/es', {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-            },
-            timeout: 8000
-        });
-
-        if (deliriusRes.data && deliriusRes.data.status && deliriusRes.data.data) {
-            const media = deliriusRes.data.data.meta?.media || [];
-            const videoObj = media.find(m => m.type === 'video') || media[0];
-            const rawVideoUrl = videoObj?.org || videoObj?.url;
-            const title = deliriusRes.data.data.title || 'TikTok_Video';
-
-            if (rawVideoUrl) {
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: title
-                });
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
-        }
-    } catch (e1) {
-        console.log('Falló proveedor Delirius:', e1.message);
-    }
-
-    // Opción B: API TiklyDown
-    try {
-        const tiklyRes = await axios.get(`https://api.tiklydown.eu.org/api/download?url=${encodeURIComponent(cleanUrl)}`, {
-            timeout: 8000
         });
 
-        if (tiklyRes.data && tiklyRes.data.video) {
-            const rawVideoUrl = tiklyRes.data.video.noWatermark || tiklyRes.data.video.watermark;
-            const title = tiklyRes.data.title || 'TikTok_Video';
+        const html = pageRes.data;
+        const ttMatch = html.match(/data-tt="([^"]+)"/) || html.match(/"tt":"([^"]+)"/);
+        const ttToken = ttMatch ? ttMatch[1] : '';
 
-            if (rawVideoUrl) {
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: title
-                });
+        // Hacemos el POST simulando el formulario de SSSTik
+        const postData = new URLSearchParams({
+            id: cleanUrl,
+            locale: 'es',
+            tt: ttToken
+        });
+
+        const response = await axios.post('https://ssstik.io/abc?url=dl', postData, {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Hx-Request': 'true',
+                'Hx-Target': 'target'
             }
-        }
-    } catch (e2) {
-        console.log('Falló proveedor TiklyDown:', e2.message);
-    }
-
-    // Opción C: API LolHuman
-    try {
-        const lolRes = await axios.get(`https://api.lolhuman.xyz/api/tiktokwm?apikey=GataDios&url=${encodeURIComponent(cleanUrl)}`, {
-            timeout: 8000
         });
 
-        if (lolRes.data && lolRes.data.result) {
-            const rawVideoUrl = lolRes.data.result;
+        const resHtml = response.data;
+
+        // Extraer enlace directo del video sin marca de agua
+        const linkMatch = resHtml.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*pure-button[^"]*without_watermark/i) ||
+                          resHtml.match(/href="(https:\/\/[^"]+)"[^>]*>Direct/i) ||
+                          resHtml.match(/href="(https:\/\/[^"]+\.tikcdn\.io[^"]+)"/i) ||
+                          resHtml.match(/href="(https:\/\/[^"]+)"/i);
+
+        if (linkMatch && linkMatch[1]) {
+            const rawVideoUrl = linkMatch[1].replace(/&amp;/g, '&');
             const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
 
             return res.json({
                 exito: true,
                 videoUrlHD: proxyUrl,
                 videoUrl: proxyUrl,
-                titulo: 'TikTok_Video'
+                titulo: 'TikTok Video'
             });
         }
-    } catch (e3) {
-        console.log('Falló proveedor LolHuman:', e3.message);
-    }
 
-    return res.status(400).json({
-        exito: false,
-        mensaje: 'No se pudo obtener el video de TikTok. Intenta nuevamente.'
-    });
+        return res.status(400).json({
+            exito: false,
+            mensaje: 'No se pudo extraer el enlace del video. Revisa que el enlace sea válido.'
+        });
+
+    } catch (err) {
+        console.error('Error en procesarTikTok SSSTik:', err.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar el enlace de TikTok.' });
+    }
 }
 
 // ==========================================
