@@ -5,9 +5,6 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// URL base de tu backend en Render para evitar redirecciones relativas en Netlify
-const SERVER_URL = 'https://sspin-backend-0vj7.onrender.com';
-
 // ==========================================
 // 1. ROTACIÓN DE API KEYS (SPOTIFY)
 // ==========================================
@@ -61,46 +58,7 @@ app.post('/api/descargar', async (req, res) => {
 });
 
 // ==========================================
-// PROXY DE DESCARGA DIRECTA
-// ==========================================
-app.get('/api/download-file', async (req, res) => {
-    const fileUrl = req.query.url;
-    let fileName = req.query.name || req.query.filename || 'archivo_media';
-
-    if (!fileUrl) {
-        return res.status(400).send('URL no proporcionada');
-    }
-
-    try {
-        const response = await axios.get(fileUrl, {
-            responseType: 'arraybuffer',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-        });
-
-        const contentType = response.headers['content-type'] || 'application/octet-stream';
-        
-        if (!fileName.includes('.')) {
-            if (contentType.includes('audio') || contentType.includes('mpeg')) {
-                fileName += '.mp3';
-            } else {
-                fileName += '.mp4';
-            }
-        }
-
-        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
-        res.setHeader('Content-Type', contentType);
-        res.send(Buffer.from(response.data));
-
-    } catch (error) {
-        console.error('Error proxy descarga:', error.message);
-        res.status(500).send('Error al procesar la descarga directa');
-    }
-});
-
-// ==========================================
-// 1. LÓGICA SPOTIFY (CON FALLBACK AUTOMÁTICO Y URL ABSOLUTA)
+// 1. LÓGICA SPOTIFY
 // ==========================================
 async function procesarSpotify(input, res) {
     try {
@@ -115,7 +73,6 @@ async function procesarSpotify(input, res) {
         let artistName = '';
         let coverImage = '';
 
-        // 1. Intentar obtener información de metadatos vía oEmbed
         try {
             const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.data) {
@@ -130,7 +87,6 @@ async function procesarSpotify(input, res) {
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
         let audioUrl = '';
 
-        // 2. Intentar descargar mediante rotación de claves RapidAPI
         for (let i = 0; i < API_KEYS.length; i++) {
             const currentApiKey = getNextApiKey();
 
@@ -145,19 +101,14 @@ async function procesarSpotify(input, res) {
 
                 if (rapidRes.data) {
                     audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.url;
-                    if (audioUrl) {
-                        console.log(`Descarga exitosa usando RapidAPI Key índice [${i}]`);
-                        break;
-                    }
+                    if (audioUrl) break;
                 }
             } catch (err) {
-                console.log(`RapidAPI Key [${i + 1}] falló o agotó cuota:`, err.message);
+                console.log(`RapidAPI Key [${i + 1}] falló:`, err.message);
             }
         }
 
-        // 3. RESPALDO (Fallback): Si RapidAPI falló en todas las claves, usar API alternativa pública
         if (!audioUrl) {
-            console.log('Todas las claves de RapidAPI fallaron. Activando servidor de respaldo...');
             try {
                 const fallbackRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
                     headers: {
@@ -172,30 +123,27 @@ async function procesarSpotify(input, res) {
                     if (!coverImage) coverImage = fallbackRes.data.metadata?.cover || '';
                 }
             } catch (fallbackErr) {
-                console.error('Error en servidor de respaldo Spotify:', fallbackErr.message);
+                console.error('Error fallback Spotify:', fallbackErr.message);
             }
         }
 
-        // Si se obtuvo enlace de audio por cualquiera de las dos vías
         if (audioUrl) {
-            const directDownloadProxyUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
-
             return res.json({
                 exito: true,
                 titulo: titleCombined,
                 coverUrl: coverImage,
-                audioUrl: directDownloadProxyUrl
+                audioUrl: audioUrl // Entrega el link directo para descarga inmediata sin fallos de proxy
             });
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'Límite de descargas alcanzado temporalmente. Por favor intenta de nuevo en unas horas.'
+            mensaje: 'No se pudo obtener el archivo de audio. Intenta nuevamente.'
         });
 
     } catch (e) {
-        console.error('Error general en procesarSpotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar Spotify.' });
+        console.error('Error procesando Spotify:', e.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error interno en Spotify.' });
     }
 }
 
@@ -223,12 +171,10 @@ async function procesarTikTok(url, res) {
 
         if (linkMatch && linkMatch[1]) {
             const rawVideoUrl = linkMatch[1];
-            const proxyUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
-
             return res.json({
                 exito: true,
-                videoUrlHD: proxyUrl,
-                videoUrl: proxyUrl,
+                videoUrlHD: rawVideoUrl,
+                videoUrl: rawVideoUrl,
                 titulo: 'TikTok Video'
             });
         }
@@ -253,7 +199,6 @@ async function procesarPinterest(inputUrl, res) {
         });
 
         const html = response.data;
-
         const videoMatch = html.match(/https:\/\/[^"]+\.mp4/gi) || 
                            html.match(/"video_list":\{"V_720P":\{"url":"(https?:\/\/[^"]+)"/i) ||
                            html.match(/"url":"(https:\/\/v1\.pinimg\.com\/videos\/[^\"]+)"/i);
@@ -262,12 +207,10 @@ async function procesarPinterest(inputUrl, res) {
             let rawVideoUrl = videoMatch[0].replace(/\\/g, '');
             if (videoMatch[1]) rawVideoUrl = videoMatch[1].replace(/\\/g, '');
 
-            const proxyUrl = `${SERVER_URL}/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=Pinterest_Video.mp4`;
-
             return res.json({
                 exito: true,
-                videoUrlHD: proxyUrl,
-                videoUrl: proxyUrl,
+                videoUrlHD: rawVideoUrl,
+                videoUrl: rawVideoUrl,
                 titulo: 'Pinterest Video'
             });
         }
