@@ -28,6 +28,22 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
+// Función para desglosar enlaces acortados (vt.tiktok.com)
+async function desglosarUrl(shortUrl) {
+    try {
+        const response = await fetch(shortUrl, {
+            method: 'GET',
+            redirect: 'follow',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+        return response.url || shortUrl;
+    } catch (e) {
+        return shortUrl;
+    }
+}
+
 // ==========================================
 // ENDPOINT PRINCIPAL: /api/descargar
 // ==========================================
@@ -174,66 +190,97 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (API ROBUSTA SSSTIK)
+// 2. LÓGICA TIKTOK (MULTI-API EN CASCADA)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
-        const cleanUrl = inputUrl.trim();
+        // Expandir URL corta si llega vt.tiktok.com
+        let cleanUrl = inputUrl.trim();
+        if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
+            cleanUrl = await desglosarUrl(cleanUrl);
+        }
 
-        // 1. Petición inicial a SSSTIK para obtener el token dinámico
-        const initRes = await fetch('https://ssstik.io/es', {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        // --- OPCIÓN 1: API de LovoTik ---
+        try {
+            const lovoRes = await fetch('https://lovetik.com/api/ajax/search', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                },
+                body: new URLSearchParams({ query: cleanUrl })
+            });
+
+            if (lovoRes.ok) {
+                const lovoData = await lovoRes.json();
+                if (lovoData && lovoData.links && lovoData.links.length > 0) {
+                    const directUrl = lovoData.links[0].a;
+                    const title = lovoData.desc || 'TikTok_Video';
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(title)}.mp4`;
+
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
+                        titulo: title
+                    });
+                }
             }
-        });
+        } catch (e) {
+            console.log('Falló Lovetik, intentando con SSSTIK...');
+        }
 
-        const initHtml = await initRes.text();
-        
-        // Extraer el token de seguridad dinámico de SSSTIK (tt)
-        const ttMatch = initHtml.match(/s_tt\s*=\s*["']([^"']+)["']/);
-        const ttToken = ttMatch ? ttMatch[1] : '';
+        // --- OPCIÓN 2: SSSTIK con URL ya desglosada ---
+        try {
+            const initRes = await fetch('https://ssstik.io/es', {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
+            const initHtml = await initRes.text();
+            const ttMatch = initHtml.match(/s_tt\s*=\s*["']([^"']+)["']/);
+            const ttToken = ttMatch ? ttMatch[1] : '';
 
-        // 2. Enviar la URL de TikTok a la API de scraping de SSSTIK
-        const params = new URLSearchParams();
-        params.append('id', cleanUrl);
-        params.append('locale', 'es');
-        params.append('tt', ttToken);
+            const params = new URLSearchParams();
+            params.append('id', cleanUrl);
+            params.append('locale', 'es');
+            params.append('tt', ttToken);
 
-        const scrapeRes = await fetch('https://ssstik.io/abc?url=dl', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'hx-target': 'target',
-                'hx-current-url': 'https://ssstik.io/es',
-                'hx-request': 'true'
-            },
-            body: params.toString()
-        });
+            const scrapeRes = await fetch('https://ssstik.io/abc?url=dl', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'hx-target': 'target',
+                    'hx-current-url': 'https://ssstik.io/es',
+                    'hx-request': 'true'
+                },
+                body: params.toString()
+            });
 
-        if (scrapeRes.ok) {
-            const htmlResult = await scrapeRes.text();
+            if (scrapeRes.ok) {
+                const htmlResult = await scrapeRes.text();
+                const downloadMatch = htmlResult.match(/href=["'](https:\/\/[^"']+)["'][^>]*class=["'][^"']*without_watermark/i) ||
+                                      htmlResult.match(/href=["'](https:\/\/tikcdn\.[^"']+)["']/i) ||
+                                      htmlResult.match(/href=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i);
 
-            // Extraer el enlace de descarga directa del video sin marca de agua
-            const downloadMatch = htmlResult.match(/href=["'](https:\/\/[^"']+)["'][^>]*class=["'][^"']*without_watermark/i) ||
-                                  htmlResult.match(/href=["'](https:\/\/tikcdn\.[^"']+)["']/i) ||
-                                  htmlResult.match(/href=["'](https:\/\/[^"']+\.mp4[^"']*)["']/i);
+                const titleMatch = htmlResult.match(/<p class=["']maintext["']>([^<]+)<\/p>/i);
+                const title = titleMatch ? titleMatch[1].trim() : 'TikTok_Video';
 
-            // Extraer el título o descripción del video
-            const titleMatch = htmlResult.match(/<p class=["']maintext["']>([^<]+)<\/p>/i);
-            const title = titleMatch ? titleMatch[1].trim() : 'TikTok_Video';
+                if (downloadMatch && downloadMatch[1]) {
+                    const directVideoUrl = downloadMatch[1];
+                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(directVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
 
-            if (downloadMatch && downloadMatch[1]) {
-                const directVideoUrl = downloadMatch[1];
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(directVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
-
-                return res.json({
-                    exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
-                    titulo: title
-                });
+                    return res.json({
+                        exito: true,
+                        videoUrlHD: proxyUrl,
+                        videoUrl: proxyUrl,
+                        titulo: title
+                    });
+                }
             }
+        } catch (e) {
+            console.log('Falló SSSTIK...');
         }
 
         return res.status(400).json({
