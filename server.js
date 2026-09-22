@@ -97,7 +97,7 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA SPOTIFY
+// 1. LÓGICA SPOTIFY (CON FALLBACK AUTOMÁTICO)
 // ==========================================
 async function procesarSpotify(input, res) {
     try {
@@ -112,6 +112,7 @@ async function procesarSpotify(input, res) {
         let artistName = '';
         let coverImage = '';
 
+        // 1. Intentar obtener información de metadatos vía oEmbed
         try {
             const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.data) {
@@ -124,7 +125,9 @@ async function procesarSpotify(input, res) {
         }
 
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
+        let audioUrl = '';
 
+        // 2. Intentar descargar mediante rotación de claves RapidAPI
         for (let i = 0; i < API_KEYS.length; i++) {
             const currentApiKey = getNextApiKey();
 
@@ -133,35 +136,62 @@ async function procesarSpotify(input, res) {
                     headers: {
                         'x-rapidapi-key': currentApiKey,
                         'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
-                    }
+                    },
+                    timeout: 8000
                 });
 
                 if (rapidRes.data) {
-                    const audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.url;
-
+                    audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.url;
                     if (audioUrl) {
-                        const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
-
-                        return res.json({
-                            exito: true,
-                            titulo: titleCombined,
-                            coverUrl: coverImage || rapidRes.data.data?.cover,
-                            audioUrl: directDownloadProxyUrl
-                        });
+                        console.log(`Descarga exitosa usando RapidAPI Key índice [${i}]`);
+                        break;
                     }
                 }
             } catch (err) {
-                console.log(`Intento Spotify Key [${i + 1}] falló:`, err.message);
+                console.log(`RapidAPI Key [${i + 1}] falló o agotó cuota:`, err.message);
             }
+        }
+
+        // 3. RESPALDO (Fallback): Si RapidAPI falló en todas las claves, usar API alternativa pública
+        if (!audioUrl) {
+            console.log('Todas las claves de RapidAPI fallaron. Activando servidor de respaldo...');
+            try {
+                const fallbackRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
+                    headers: {
+                        'Origin': 'https://spotifydown.com',
+                        'Referer': 'https://spotifydown.com/'
+                    },
+                    timeout: 10000
+                });
+
+                if (fallbackRes.data && fallbackRes.data.success && fallbackRes.data.link) {
+                    audioUrl = fallbackRes.data.link;
+                    if (!coverImage) coverImage = fallbackRes.data.metadata?.cover || '';
+                }
+            } catch (fallbackErr) {
+                console.error('Error en servidor de respaldo Spotify:', fallbackErr.message);
+            }
+        }
+
+        // Si se obtuvo enlace de audio por cualquiera de las dos vías
+        if (audioUrl) {
+            const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
+
+            return res.json({
+                exito: true,
+                titulo: titleCombined,
+                coverUrl: coverImage,
+                audioUrl: directDownloadProxyUrl
+            });
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'Límite de descargas de Spotify alcanzado temporalmente.'
+            mensaje: 'No fue posible procesar la canción en este momento. Intenta más tarde.'
         });
 
     } catch (e) {
-        console.error('Error procesando Spotify:', e.message);
+        console.error('Error general en procesarSpotify:', e.message);
         return res.status(500).json({ exito: false, mensaje: 'Error al procesar Spotify.' });
     }
 }
