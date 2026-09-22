@@ -170,99 +170,51 @@ async function procesarSpotify(input, res) {
     }
 }
 
+const { exec } = require('child_process');
+
 // ==========================================
-// PROCESAR TIKTOK (Soporte seguro para vt.tiktok.com)
+// PROCESAR TIKTOK (Soporte Nativo con yt-dlp)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
         const cleanUrl = inputUrl.trim();
 
-        // 1. Proveedor 1: API v2 de TikWM
-        try {
-            const resTikwm = await fetch('https://www.tikwm.com/api/', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                },
-                body: new URLSearchParams({
-                    url: cleanUrl,
-                    count: 12,
-                    cursor: 0,
-                    web: 1,
-                    hd: 1
-                })
-            });
+        // 1. Ejecutar yt-dlp nativo para extraer el enlace directo del video (JSON)
+        const comando = `./yt-dlp --dump-json --no-warnings --no-call-home "${cleanUrl}"`;
 
-            if (resTikwm.ok) {
-                const data = await resTikwm.json();
-                if (data.code === 0 && data.data) {
-                    const videoLink = data.data.hdplay || data.data.play;
-                    const finalVideoUrl = videoLink.startsWith('http') ? videoLink : `https://www.tikwm.com${videoLink}`;
-                    const proxyUrl = `/api/download-file?url=${encodeURIComponent(finalVideoUrl)}&name=TikTok_Video.mp4`;
-
-                    return res.json({
-                        exito: true,
-                        videoUrlHD: proxyUrl,
-                        videoUrl: proxyUrl,
-                        titulo: data.data.title || 'TikTok Video'
-                    });
-                }
+        exec(comando, { timeout: 15000 }, (error, stdout, stderr) => {
+            if (error || !stdout) {
+                console.error('Error yt-dlp TikTok:', error || stderr);
+                return res.status(400).json({
+                    exito: false,
+                    mensaje: 'No se pudo procesar este enlace de TikTok. Verifica la URL.'
+                });
             }
-        } catch (e) {
-            console.log('Falló proveedor 1 (TikWM):', e.message);
-        }
 
-        // 2. Proveedor 2: API Delirius (Soporta vt.tiktok.com)
-        try {
-            const resDelirius = await fetch(`https://deliriussapi-official.vercel.app/download/tiktok?url=${encodeURIComponent(cleanUrl)}`);
-            if (resDelirius.ok) {
-                const dataDelirius = await resDelirius.json();
-                if (dataDelirius.status && dataDelirius.data) {
-                    const mediaList = dataDelirius.data.meta?.media || [];
-                    const videoObj = mediaList.find(m => m.type === 'video') || mediaList[0];
-                    const videoUrl = videoObj?.org || videoObj?.url;
+            try {
+                const info = JSON.parse(stdout);
+                
+                // Extraer la URL del video original sin marca de agua
+                const directUrl = info.url || (info.formats && info.formats[info.formats.length - 1]?.url);
 
-                    if (videoUrl) {
-                        const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
-                        return res.json({
-                            exito: true,
-                            videoUrlHD: proxyUrl,
-                            videoUrl: proxyUrl,
-                            titulo: dataDelirius.data.title || 'TikTok Video'
-                        });
-                    }
+                if (!directUrl) {
+                    return res.status(400).json({ exito: false, mensaje: 'No se encontró enlace multimedia.' });
                 }
-            }
-        } catch (e) {
-            console.log('Falló proveedor 2 (Delirius):', e.message);
-        }
 
-        // 3. Proveedor 3: API Lovan (Fallback SSL Seguro)
-        try {
-            const resLovan = await fetch(`https://api.lovan.tech/api/tiktok?url=${encodeURIComponent(cleanUrl)}`);
-            if (resLovan.ok) {
-                const dataLovan = await resLovan.json();
-                if (dataLovan.status && dataLovan.result) {
-                    const videoUrl = dataLovan.result.hd || dataLovan.result.nowatermark || dataLovan.result.watermark;
-                    if (videoUrl) {
-                        const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=TikTok_Video.mp4`;
-                        return res.json({
-                            exito: true,
-                            videoUrlHD: proxyUrl,
-                            videoUrl: proxyUrl,
-                            titulo: dataLovan.result.title || 'TikTok Video'
-                        });
-                    }
-                }
-            }
-        } catch (e) {
-            console.log('Falló proveedor 3 (Lovan):', e.message);
-        }
+                // Generar URL mediante el proxy local del backend
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(directUrl)}&name=TikTok_Video.mp4`;
 
-        return res.status(400).json({
-            exito: false,
-            mensaje: 'No se pudo procesar este enlace de TikTok. Intenta con un enlace completo.'
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: info.title || info.description || 'TikTok Video'
+                });
+
+            } catch (e) {
+                console.error('Error al procesar JSON de yt-dlp:', e.message);
+                return res.status(500).json({ exito: false, mensaje: 'Error al interpretar los datos del video.' });
+            }
         });
 
     } catch (err) {
