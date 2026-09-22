@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const { Tiktok } = require('@tobyg74/tiktok-api-dl');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -167,57 +168,49 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (INSTANCIA COBALT / TIKWM DIRECTA)
+// 2. LÓGICA TIKTOK (MULTI-FALLBACK ESTABLE)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     let cleanUrl = inputUrl.trim();
 
-    // Opción 1: API Cobalt.tools (Pública y libre de 403)
+    // Intento 1: Vía Librería TikTok Downloader
     try {
-        const cobaltRes = await axios.post('https://cobalt-api.koyeb.app/', {
-            url: cleanUrl,
-            videoQuality: 'max'
-        }, {
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            },
-            timeout: 10000
-        });
+        const result = await Tiktok(cleanUrl, { version: 'v2' });
+        if (result && result.status === 'success' && result.result) {
+            const videoData = result.result;
+            const rawVideoUrl = videoData.video1 || videoData.video2 || videoData.video_hd;
+            const title = videoData.desc || 'TikTok_Video';
 
-        if (cobaltRes.data && cobaltRes.data.url) {
-            const rawVideoUrl = cobaltRes.data.url;
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
-
-            return res.json({
-                exito: true,
-                videoUrlHD: proxyUrl,
-                videoUrl: proxyUrl,
-                titulo: 'TikTok Video'
-            });
+            if (rawVideoUrl) {
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: title
+                });
+            }
         }
     } catch (e1) {
-        console.log('Falló Cobalt:', e1.message);
+        console.log('Falló librería Tiktok-DL:', e1.message);
     }
 
-    // Opción 2: TikWM vía POST directo
+    // Intento 2: API pública LoveTik
     try {
         const formData = new URLSearchParams();
-        formData.append('url', cleanUrl);
-        formData.append('hd', '1');
+        formData.append('query', cleanUrl);
 
-        const tikwmRes = await axios.post('https://www.tikwm.com/api/', formData, {
+        const lovetikRes = await axios.post('https://lovetik.com/api/ajax/search', formData, {
             headers: {
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1'
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
             },
-            timeout: 10000
+            timeout: 8000
         });
 
-        if (tikwmRes.data && tikwmRes.data.data) {
-            const videoData = tikwmRes.data.data;
-            const rawVideoUrl = videoData.hdplay || videoData.play;
-            const title = videoData.title || 'TikTok_Video';
+        if (lovetikRes.data && lovetikRes.data.links) {
+            const links = lovetikRes.data.links;
+            const rawVideoUrl = links[0]?.a || links[1]?.a;
+            const title = lovetikRes.data.desc || 'TikTok_Video';
 
             if (rawVideoUrl) {
                 const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(title)}.mp4`;
@@ -230,7 +223,7 @@ async function procesarTikTok(inputUrl, res) {
             }
         }
     } catch (e2) {
-        console.log('Falló TikWM POST:', e2.message);
+        console.log('Falló LoveTik:', e2.message);
     }
 
     return res.status(400).json({
