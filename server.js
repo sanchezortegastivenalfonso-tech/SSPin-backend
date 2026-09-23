@@ -29,6 +29,21 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
+// Función para expandir enlaces acortados (vt.tiktok.com)
+async function desglosarUrl(shortUrl) {
+    try {
+        const response = await axios.get(shortUrl, {
+            maxRedirects: 5,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
+        });
+        return response.request.res.responseUrl || shortUrl;
+    } catch (e) {
+        return shortUrl;
+    }
+}
+
 // ==========================================
 // ENDPOINT PRINCIPAL: /api/descargar
 // ==========================================
@@ -125,6 +140,32 @@ async function procesarSpotify(input, res) {
 
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
 
+        // MOTOR 1: Spotifydown API (Sin clave, directo y con bitrate correcto)
+        try {
+            const spotRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
+                headers: {
+                    'Origin': 'https://spotifydown.com',
+                    'Referer': 'https://spotifydown.com/',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
+
+            if (spotRes.data && spotRes.data.success && spotRes.data.link) {
+                const audioUrl = spotRes.data.link;
+                const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
+
+                return res.json({
+                    exito: true,
+                    titulo: spotRes.data.metadata?.title || titleCombined,
+                    coverUrl: spotRes.data.metadata?.cover || coverImage,
+                    audioUrl: directDownloadProxyUrl
+                });
+            }
+        } catch (err) {
+            console.log('Falló motor primario Spotifydown, intentando rotación de API Keys...');
+        }
+
+        // MOTOR 2: Rotación RapidAPI
         for (let i = 0; i < API_KEYS.length; i++) {
             const currentApiKey = getNextApiKey();
 
@@ -157,7 +198,7 @@ async function procesarSpotify(input, res) {
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'Límite de descargas de Spotify alcanzado por hoy. Inténtalo de nuevo mañana.'
+            mensaje: 'Límite diario alcanzado en Spotify. Vuelve a intentarlo mañana.'
         });
 
     } catch (e) {
@@ -167,13 +208,47 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (REESTRUCTURADA CON AXIOS)
+// 2. LÓGICA TIKTOK (MULTI-API EN CASCADA CON DESGLOSE DE URL)
 // ==========================================
-async function procesarTikTok(url, res) {
+async function procesarTikTok(inputUrl, res) {
     try {
-        // Petición a SSSTik mediante AXIOS
+        let cleanUrl = inputUrl.trim();
+
+        if (cleanUrl.includes('vt.tiktok.com') || cleanUrl.includes('vm.tiktok.com')) {
+            cleanUrl = await desglosarUrl(cleanUrl);
+        }
+
+        // --- OPCIÓN 1: API Lovetik ---
+        try {
+            const paramsLovo = new URLSearchParams();
+            paramsLovo.append('query', cleanUrl);
+
+            const lovoRes = await axios.post('https://lovetik.com/api/ajax/search', paramsLovo, {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
+
+            if (lovoRes.data && lovoRes.data.links && lovoRes.data.links.length > 0) {
+                const directUrl = lovoRes.data.links[0].a;
+                const title = lovoRes.data.desc || 'TikTok_Video';
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(title)}.mp4`;
+
+                return res.json({
+                    exito: true,
+                    videoUrlHD: proxyUrl,
+                    videoUrl: proxyUrl,
+                    titulo: title
+                });
+            }
+        } catch (e) {
+            console.log('Falló Lovetik, intentando con SSSTik...');
+        }
+
+        // --- OPCIÓN 2: SSSTik ---
         const params = new URLSearchParams();
-        params.append('id', url);
+        params.append('id', cleanUrl);
         params.append('locale', 'es');
         params.append('tt', '0');
 
@@ -201,7 +276,7 @@ async function procesarTikTok(url, res) {
             });
         }
 
-        return res.status(400).json({ exito: false, mensaje: 'No se pudo extraer el enlace del video.' });
+        return res.status(400).json({ exito: false, mensaje: 'No se pudo extraer el enlace del video de TikTok.' });
 
     } catch (err) {
         console.error('Error procesando TikTok:', err.message);
