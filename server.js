@@ -55,15 +55,13 @@ app.get('/api/download-file', async (req, res) => {
     }
 
     try {
-        // Hacemos el fetch como arraybuffer para evitar errores de expiración en streams diferidos
         const response = await axios.get(fileUrl, {
             responseType: 'arraybuffer',
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*',
-                'Referer': 'https://open.spotify.com/'
+                'Accept': '*/*'
             },
-            timeout: 20000
+            timeout: 25000
         });
 
         const contentType = response.headers['content-type'] || 'audio/mpeg';
@@ -80,7 +78,7 @@ app.get('/api/download-file', async (req, res) => {
 
     } catch (error) {
         console.error('Error al procesar el archivo en el proxy:', error.message);
-        return res.status(500).send('El enlace expiro o el servidor de origen denego el acceso. Intenta buscar de nuevo.');
+        return res.status(500).send('Error al descargar el archivo. Realiza la búsqueda de nuevo.');
     }
 });
 
@@ -113,10 +111,15 @@ app.post('/api/descargar', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA SPOTIFY
+// 1. LÓGICA SPOTIFY (CORREGIDA PARA CANCIÓN EXACTA)
 // ==========================================
 async function procesarSpotify(input, res) {
     try {
+        // Limpiar URL si viene acortada o con parámetros extra
+        if (input.includes('spotify.link')) {
+            input = await desglosarUrl(input);
+        }
+
         const match = input.match(/track\/([a-zA-Z0-9]+)/);
         if (!match) {
             return res.status(400).json({ exito: false, mensaje: 'URL de Spotify no valida.' });
@@ -124,10 +127,11 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        let trackTitle = 'Cancion_Spotify';
+        let trackTitle = 'Cancion';
         let artistName = '';
         let coverImage = '';
 
+        // Obtenemos los datos exactos del track vía oEmbed oficial
         try {
             const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.data) {
@@ -141,11 +145,13 @@ async function procesarSpotify(input, res) {
 
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
 
-        // Intentar RapidAPI con rotación
+        // BÚSQUEDA EXACTA EN API
         for (let i = 0; i < API_KEYS.length; i++) {
             const currentApiKey = getNextApiKey();
             try {
-                const rapidRes = await axios.get(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
+                // Pasamos la URL limpia de la pista
+                const rapidRes = await axios.get(`https://spotify-downloader9.p.rapidapi.com/downloadSong`, {
+                    params: { songId: cleanUrl },
                     headers: {
                         'x-rapidapi-key': currentApiKey,
                         'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
@@ -153,8 +159,8 @@ async function procesarSpotify(input, res) {
                     timeout: 10000
                 });
 
-                if (rapidRes.data) {
-                    const audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.url;
+                if (rapidRes.data && rapidRes.data.success) {
+                    const audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.data?.url;
                     if (audioUrl) {
                         return res.json({
                             exito: true,
@@ -165,13 +171,37 @@ async function procesarSpotify(input, res) {
                     }
                 }
             } catch (err) {
-                console.log(`Key ${i + 1} fallo, intentando la siguiente...`);
+                console.log(`Key ${i + 1} fallo o devolvió error, probando siguiente...`);
             }
+        }
+
+        // MOTOR SECUNDARIO (Respaldo por si fallan las API Keys)
+        try {
+            const spotRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
+                headers: {
+                    'Origin': 'https://spotifydown.com',
+                    'Referer': 'https://spotifydown.com/',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                timeout: 8000
+            });
+
+            if (spotRes.data && spotRes.data.success && spotRes.data.link) {
+                const audioUrl = spotRes.data.link;
+                return res.json({
+                    exito: true,
+                    titulo: titleCombined,
+                    coverUrl: coverImage,
+                    audioUrl: `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`
+                });
+            }
+        } catch (err) {
+            console.log('Falló el motor secundario:', err.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo generar el enlace en este momento. Intentalo de nuevo.'
+            mensaje: 'No se pudo obtener el audio exacto. Inténtalo de nuevo en unos momentos.'
         });
 
     } catch (e) {
