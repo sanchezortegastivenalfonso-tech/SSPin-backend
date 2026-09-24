@@ -40,7 +40,7 @@ app.get('/api/download-file', async (req, res) => {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             },
-            timeout: 30000
+            timeout: 35000
         });
 
         const contentType = response.headers['content-type'] || 'audio/mpeg';
@@ -90,7 +90,7 @@ app.post('/api/descargar', async (req, res) => {
 });
 
 // ==========================================
-// LÓGICA SPOTIFY (DEFINITIVA Y EXACTA)
+// LÓGICA SPOTIFY
 // ==========================================
 async function procesarSpotify(input, res) {
     try {
@@ -105,15 +105,15 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        let trackTitle = '';
+        // Obtener datos metadatos vía oEmbed oficial de Spotify
+        let trackTitle = 'Spotify Track';
         let artistName = '';
         let coverImage = '';
 
-        // 1. EXTRAER METADATOS PRECISOS DE SPOTIFY
         try {
             const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.data) {
-                trackTitle = oembedRes.data.title || '';
+                trackTitle = oembedRes.data.title || trackTitle;
                 artistName = oembedRes.data.author_name || '';
                 coverImage = oembedRes.data.thumbnail_url || '';
             }
@@ -121,88 +121,85 @@ async function procesarSpotify(input, res) {
             console.log('Error oEmbed:', e.message);
         }
 
-        if (!trackTitle) {
-            return res.status(400).json({ exito: false, mensaje: 'No se pudieron extraer los datos de la canción.' });
-        }
-
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
-        const searchQuery = `${trackTitle} ${artistName} Audio Official`;
 
-        // 2. MOTOR 1: SpotDL Public Engine API
+        // MOTOR 1: SpotifyMate Direct API
         try {
-            const spotDlRes = await axios.get(`https://api.spotdl.com/search?query=${encodeURIComponent(cleanUrl)}`, {
-                timeout: 8000
+            const response = await axios.get(`https://spotimate.com/api/download?url=${encodeURIComponent(cleanUrl)}`, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Referer': 'https://spotimate.com/'
+                },
+                timeout: 10000
             });
-            if (spotDlRes.data && spotDlRes.data.downloadUrl) {
+
+            if (response.data && response.data.mp3) {
                 return res.json({
                     exito: true,
                     titulo: titleCombined,
                     coverUrl: coverImage,
-                    audioUrl: `/api/download-file?url=${encodeURIComponent(spotDlRes.data.downloadUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`
+                    audioUrl: `/api/download-file?url=${encodeURIComponent(response.data.mp3)}&name=${encodeURIComponent(titleCombined)}.mp3`
                 });
             }
         } catch (e) {
-            console.log('Motor 1 (SpotDL) falló...');
+            console.log('Motor 1 falló...');
         }
 
-        // 3. MOTOR 2: BÚSQUEDA Y CONVERSIÓN VÍA CONVERTIDOR MP3 ROBUSTO (YTMP3 API)
+        // MOTOR 2: Spotimate Form/POST API
         try {
-            const ytSearchRes = await axios.get(`https://invidious.io.lol/api/v1/search?q=${encodeURIComponent(searchQuery)}&type=video`, {
-                timeout: 7000
-            });
-
-            let videoId = '';
-            if (ytSearchRes.data && ytSearchRes.data.length > 0) {
-                videoId = ytSearchRes.data[0].videoId;
-            }
-
-            if (videoId) {
-                const mp3Res = await axios.get(`https://api.vevioz.com/api/button/mp3/${videoId}`, {
-                    timeout: 8000
-                });
-
-                if (mp3Res.data && typeof mp3Res.data === 'string') {
-                    const matchUrl = mp3Res.data.match(/href="(https:\/\/[^"]+)"/);
-                    if (matchUrl && matchUrl[1]) {
-                        return res.json({
-                            exito: true,
-                            titulo: titleCombined,
-                            coverUrl: coverImage,
-                            audioUrl: `/api/download-file?url=${encodeURIComponent(matchUrl[1])}&name=${encodeURIComponent(titleCombined)}.mp3`
-                        });
-                    }
+            const postRes = await axios.post('https://spotimate.com/action', 
+                new URLSearchParams({ url: cleanUrl }).toString(), 
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                    },
+                    timeout: 10000
                 }
-            }
-        } catch (e) {
-            console.log('Motor 2 falló:', e.message);
-        }
+            );
 
-        // 4. MOTOR 3: Respaldo de descarga rápida vía Savetube API
-        try {
-            const saveRes = await axios.post('https://api.savetube.me/api/v1/terabox-download', {
-                url: cleanUrl
-            }, { timeout: 8000 });
-
-            if (saveRes.data && saveRes.data.downloadUrl) {
+            if (postRes.data && postRes.data.url) {
                 return res.json({
                     exito: true,
                     titulo: titleCombined,
                     coverUrl: coverImage,
-                    audioUrl: `/api/download-file?url=${encodeURIComponent(saveRes.data.downloadUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`
+                    audioUrl: `/api/download-file?url=${encodeURIComponent(postRes.data.url)}&name=${encodeURIComponent(titleCombined)}.mp3`
                 });
             }
         } catch (e) {
-            console.log('Motor 3 falló:', e.message);
+            console.log('Motor 2 falló...');
+        }
+
+        // MOTOR 3: SpotifyDl Public Gateway
+        try {
+            const dlRes = await axios.get(`https://api.v2.spotifydownloader.com/download?id=${trackId}`, {
+                headers: {
+                    'Origin': 'https://spotifydownloader.com',
+                    'Referer': 'https://spotifydownloader.com/'
+                },
+                timeout: 10000
+            });
+
+            if (dlRes.data && dlRes.data.link) {
+                return res.json({
+                    exito: true,
+                    titulo: titleCombined,
+                    coverUrl: coverImage,
+                    audioUrl: `/api/download-file?url=${encodeURIComponent(dlRes.data.link)}&name=${encodeURIComponent(titleCombined)}.mp3`
+                });
+            }
+        } catch (e) {
+            console.log('Motor 3 falló...');
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo procesar la canción de Spotify. Intenta nuevamente.'
+            mensaje: 'No se pudo procesar la canción de Spotify. Por favor reintenta en unos segundos.'
         });
 
     } catch (e) {
-        console.error('Error en Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar la canción.' });
+        console.error('Error Spotify:', e.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error interno en Spotify.' });
     }
 }
 
