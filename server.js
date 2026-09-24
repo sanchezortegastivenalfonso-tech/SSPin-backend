@@ -79,13 +79,11 @@ app.get('/api/download-file', async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
         res.setHeader('Content-Type', contentType);
 
-        // Transmisión directa de datos
         response.data.pipe(res);
 
     } catch (error) {
         console.error('Error enviando stream de descarga:', error.message);
 
-        // Si el stream directo falla, intentamos redirigir directamente al link original
         try {
             return res.redirect(fileUrl);
         } catch (e) {
@@ -152,7 +150,7 @@ async function procesarSpotify(input, res) {
 
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
 
-        // MOTOR 1: Cobalt API (Enlaces directos de larga duración)
+        // MOTOR 1: Cobalt API
         try {
             const cobaltRes = await axios.post('https://api.cobalt.tools/api/json', {
                 url: cleanUrl,
@@ -235,9 +233,10 @@ async function procesarSpotify(input, res) {
             console.log('Falló Spotifydown:', err.message);
         }
 
+        // MENSAJE CUANDO NINGÚN MOTOR DA CON LA CANCIÓN O SERVIDOR DENEGADO
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo generar la descarga en este momento. Inténtalo de nuevo.'
+            mensaje: 'No se pudo obtener el audio exacto. Coloca otro enlace o inténtalo de nuevo más tarde.'
         });
 
     } catch (e) {
