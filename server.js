@@ -5,26 +5,6 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// ==========================================
-// 1. ROTACIÓN DE API KEYS (SPOTIFY)
-// ==========================================
-const API_KEYS = [
-    '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038',
-    'd57a57f0e6msh60d33aa70fd4bfap142a4ejsn3dd732d92d81',
-    'cfe9f96619msh2bf6f1ef96b6f5dp1ca3b8jsn55c76c99edbb',
-    'ff647c7411msh1f8a4b925654801p17bfa0jsn43708a13c350',
-    '662e02b486msh639f823b995cba3p1a1e83jsn3419c2db929d',
-    '9652174c07msh5a18f10e100709cp1f0e56jsna7079cb837cf'
-];
-
-let currentKeyIndex = 0;
-
-function getNextApiKey() {
-    const key = API_KEYS[currentKeyIndex];
-    currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-    return key;
-}
-
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
@@ -34,7 +14,7 @@ async function desglosarUrl(shortUrl) {
         const response = await axios.get(shortUrl, {
             maxRedirects: 5,
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
         });
         return response.request.res.responseUrl || shortUrl;
@@ -44,11 +24,11 @@ async function desglosarUrl(shortUrl) {
 }
 
 // ==========================================
-// ENDPOINT DE DESCARGA DIRECTA POR STREAM
+// ENDPOINT PROXY DE DESCARGA
 // ==========================================
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
-    let fileName = req.query.name || 'archivo_descargado';
+    let fileName = req.query.name || 'cancion';
 
     if (!fileUrl) {
         return res.status(400).send('URL no proporcionada');
@@ -58,8 +38,7 @@ app.get('/api/download-file', async (req, res) => {
         const response = await axios.get(fileUrl, {
             responseType: 'arraybuffer',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': '*/*'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             },
             timeout: 25000
         });
@@ -77,7 +56,7 @@ app.get('/api/download-file', async (req, res) => {
         return res.send(Buffer.from(response.data));
 
     } catch (error) {
-        console.error('Error al procesar el archivo en el proxy:', error.message);
+        console.error('Error enviando archivo:', error.message);
         return res.status(500).send('Error al descargar el archivo. Realiza la búsqueda de nuevo.');
     }
 });
@@ -111,11 +90,10 @@ app.post('/api/descargar', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA SPOTIFY (CORREGIDA PARA CANCIÓN EXACTA)
+// LÓGICA SPOTIFY (MOTOR DE ALTA PRECISIÓN)
 // ==========================================
 async function procesarSpotify(input, res) {
     try {
-        // Limpiar URL si viene acortada o con parámetros extra
         if (input.includes('spotify.link')) {
             input = await desglosarUrl(input);
         }
@@ -131,7 +109,7 @@ async function procesarSpotify(input, res) {
         let artistName = '';
         let coverImage = '';
 
-        // Obtenemos los datos exactos del track vía oEmbed oficial
+        // Obtenemos los metadatos oficiales directamente de Spotify
         try {
             const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.data) {
@@ -140,42 +118,37 @@ async function procesarSpotify(input, res) {
                 coverImage = oembedRes.data.thumbnail_url || '';
             }
         } catch (e) {
-            console.log('Error oembed:', e.message);
+            console.log('Error al obtener metadata oEmbed:', e.message);
         }
 
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
 
-        // BÚSQUEDA EXACTA EN API
-        for (let i = 0; i < API_KEYS.length; i++) {
-            const currentApiKey = getNextApiKey();
-            try {
-                // Pasamos la URL limpia de la pista
-                const rapidRes = await axios.get(`https://spotify-downloader9.p.rapidapi.com/downloadSong`, {
-                    params: { songId: cleanUrl },
+        // MOTOR 1: SpotifyMate API (Precisión por Track ID)
+        try {
+            const mateRes = await axios.post('https://spotimate.com/api/download', 
+                { url: cleanUrl },
+                {
                     headers: {
-                        'x-rapidapi-key': currentApiKey,
-                        'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
+                        'Content-Type': 'application/json',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                     },
                     timeout: 10000
-                });
-
-                if (rapidRes.data && rapidRes.data.success) {
-                    const audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.data?.url;
-                    if (audioUrl) {
-                        return res.json({
-                            exito: true,
-                            titulo: titleCombined,
-                            coverUrl: coverImage,
-                            audioUrl: `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`
-                        });
-                    }
                 }
-            } catch (err) {
-                console.log(`Key ${i + 1} fallo o devolvió error, probando siguiente...`);
+            );
+
+            if (mateRes.data && mateRes.data.url) {
+                return res.json({
+                    exito: true,
+                    titulo: titleCombined,
+                    coverUrl: coverImage,
+                    audioUrl: `/api/download-file?url=${encodeURIComponent(mateRes.data.url)}&name=${encodeURIComponent(titleCombined)}.mp3`
+                });
             }
+        } catch (err) {
+            console.log('Falló Motor 1 (Spotimate), probando Motor 2...');
         }
 
-        // MOTOR SECUNDARIO (Respaldo por si fallan las API Keys)
+        // MOTOR 2: SpotifyDown API
         try {
             const spotRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
                 headers: {
@@ -183,25 +156,24 @@ async function procesarSpotify(input, res) {
                     'Referer': 'https://spotifydown.com/',
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
-                timeout: 8000
+                timeout: 10000
             });
 
             if (spotRes.data && spotRes.data.success && spotRes.data.link) {
-                const audioUrl = spotRes.data.link;
                 return res.json({
                     exito: true,
                     titulo: titleCombined,
                     coverUrl: coverImage,
-                    audioUrl: `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`
+                    audioUrl: `/api/download-file?url=${encodeURIComponent(spotRes.data.link)}&name=${encodeURIComponent(titleCombined)}.mp3`
                 });
             }
         } catch (err) {
-            console.log('Falló el motor secundario:', err.message);
+            console.log('Falló Motor 2 (SpotifyDown):', err.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el audio exacto. Inténtalo de nuevo en unos momentos.'
+            mensaje: 'No se pudo obtener el audio exacto. Verifica el enlace e intentalo de nuevo.'
         });
 
     } catch (e) {
@@ -211,7 +183,7 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK
+// LÓGICA TIKTOK
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
@@ -221,30 +193,26 @@ async function procesarTikTok(inputUrl, res) {
             cleanUrl = await desglosarUrl(cleanUrl);
         }
 
-        try {
-            const paramsLovo = new URLSearchParams();
-            paramsLovo.append('query', cleanUrl);
+        const paramsLovo = new URLSearchParams();
+        paramsLovo.append('query', cleanUrl);
 
-            const lovoRes = await axios.post('https://lovetik.com/api/ajax/search', paramsLovo, {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                }
-            });
-
-            if (lovoRes.data && lovoRes.data.links && lovoRes.data.links.length > 0) {
-                const directUrl = lovoRes.data.links[0].a;
-                const title = lovoRes.data.desc || 'TikTok_Video';
-
-                return res.json({
-                    exito: true,
-                    videoUrlHD: `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(title)}.mp4`,
-                    videoUrl: `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(title)}.mp4`,
-                    titulo: title
-                });
+        const lovoRes = await axios.post('https://lovetik.com/api/ajax/search', paramsLovo, {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             }
-        } catch (e) {
-            console.log('Fallo Lovetik...');
+        });
+
+        if (lovoRes.data && lovoRes.data.links && lovoRes.data.links.length > 0) {
+            const directUrl = lovoRes.data.links[0].a;
+            const title = lovoRes.data.desc || 'TikTok_Video';
+
+            return res.json({
+                exito: true,
+                videoUrlHD: `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(title)}.mp4`,
+                videoUrl: `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(title)}.mp4`,
+                titulo: title
+            });
         }
 
         return res.status(400).json({ exito: false, mensaje: 'No se pudo obtener el video de TikTok.' });
@@ -256,7 +224,7 @@ async function procesarTikTok(inputUrl, res) {
 }
 
 // ==========================================
-// 3. LÓGICA PINTEREST
+// LÓGICA PINTEREST
 // ==========================================
 async function procesarPinterest(inputUrl, res) {
     try {
