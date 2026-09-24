@@ -12,7 +12,7 @@ app.use(express.static(__dirname));
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
 // ==========================================
-// DESGLOSAR Y EXPANDIR URLS
+// FUNCIÓN AUXILIAR: DESGLOSAR Y EXPANDIR URLS
 // ==========================================
 async function desglosarUrl(shortUrl) {
     try {
@@ -30,7 +30,7 @@ async function desglosarUrl(shortUrl) {
 }
 
 // ==========================================
-// PROXY DE DESCARGA DIRECTA
+// ENDPOINT PROXY DE DESCARGA DIRECTA
 // ==========================================
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
@@ -113,6 +113,7 @@ async function procesarSpotify(input, res) {
         let artistName = '';
         let coverImage = '';
 
+        // Obtener metadatos oficiales vía Spotify oEmbed
         try {
             const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.data) {
@@ -121,81 +122,79 @@ async function procesarSpotify(input, res) {
                 coverImage = oembedRes.data.thumbnail_url || '';
             }
         } catch (e) {
-            console.log('Error oEmbed Spotify:', e.message);
+            console.log('Error oEmbed:', e.message);
         }
 
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : (trackTitle || 'Spotify Track');
-        const query = `${trackTitle} ${artistName}`.trim();
 
-        // MOTOR 1: J2DOWNLOAD / API Directa alternativa
+        // MOTOR 1: SpotifyMate API Endpoint
         try {
-            const j2Res = await axios.get(`https://api.v2.fabdl.com/spotify/get?url=${encodeURIComponent(cleanUrl)}`, {
-                headers: { 'User-Agent': USER_AGENT },
-                timeout: 10000
+            const params = new URLSearchParams();
+            params.append('url', cleanUrl);
+
+            const mateRes = await axios.post('https://spotifymate.com/action', params, {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': USER_AGENT,
+                    'Origin': 'https://spotifymate.com',
+                    'Referer': 'https://spotifymate.com/'
+                },
+                timeout: 12000
             });
 
-            if (j2Res.data && j2Res.data.result && j2Res.data.result.gid) {
-                const gid = j2Res.data.result.gid;
-                const id = j2Res.data.result.id;
+            const html = mateRes.data;
+            const linkMatch = html.match(/href="(https:\/\/[^"]+\.mp3[^"]*)"/i) || html.match(/href="(https:\/\/[^"]+download[^"]*)"/i);
 
-                const convertRes = await axios.get(`https://api.v2.fabdl.com/spotify/mp3-convert-task/${gid}/${id}`, {
-                    headers: { 'User-Agent': USER_AGENT },
-                    timeout: 15000
-                });
-
-                if (convertRes.data && convertRes.data.result && convertRes.data.result.download_url) {
-                    const downloadLink = `https://api.v2.fabdl.com${convertRes.data.result.download_url}`;
-                    return res.json({
-                        exito: true,
-                        titulo: titleCombined,
-                        coverUrl: coverImage,
-                        audioUrl: `/api/download-file?url=${encodeURIComponent(downloadLink)}&name=${encodeURIComponent(titleCombined)}.mp3`
-                    });
-                }
-            }
-        } catch (e) {
-            console.log('Motor 1 (FabDL) falló:', e.message);
-        }
-
-        // MOTOR 2: Spotimate Web Direct
-        try {
-            const spotRes = await axios.post('https://spotimate.com/action', 
-                `url=${encodeURIComponent(cleanUrl)}`, 
-                {
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                        'User-Agent': USER_AGENT,
-                        'Referer': 'https://spotimate.com/'
-                    },
-                    timeout: 10000
-                }
-            );
-
-            if (spotRes.data && spotRes.data.status && spotRes.data.url) {
+            if (linkMatch && linkMatch[1]) {
+                const downloadUrl = linkMatch[1].replace(/&amp;/g, '&');
                 return res.json({
                     exito: true,
                     titulo: titleCombined,
                     coverUrl: coverImage,
-                    audioUrl: `/api/download-file?url=${encodeURIComponent(spotRes.data.url)}&name=${encodeURIComponent(titleCombined)}.mp3`
+                    audioUrl: `/api/download-file?url=${encodeURIComponent(downloadUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`
                 });
             }
         } catch (e) {
-            console.log('Motor 2 (Spotimate) falló:', e.message);
+            console.log('Motor 1 (SpotifyMate) falló:', e.message);
+        }
+
+        // MOTOR 2: SpotDown Gateway
+        try {
+            const spotDownRes = await axios.post('https://spotdown.org/api/download-track', {
+                url: cleanUrl
+            }, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': USER_AGENT
+                },
+                timeout: 12000
+            });
+
+            if (spotDownRes.data && spotDownRes.data.file_url) {
+                return res.json({
+                    exito: true,
+                    titulo: titleCombined,
+                    coverUrl: coverImage,
+                    audioUrl: `/api/download-file?url=${encodeURIComponent(spotDownRes.data.file_url)}&name=${encodeURIComponent(titleCombined)}.mp3`
+                });
+            }
+        } catch (e) {
+            console.log('Motor 2 (SpotDown) falló:', e.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo descargar de Spotify por restricciones de servidor. Inténtalo con TikTok.'
+            mensaje: 'No se pudo descargar de Spotify en este momento. Inténtalo de nuevo.'
         });
 
     } catch (e) {
         console.error('Error Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error interno procesando Spotify.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error interno en el servidor.' });
     }
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (SOLUCIÓN ERROR 403)
+// 2. LÓGICA TIKTOK
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
@@ -205,7 +204,7 @@ async function procesarTikTok(inputUrl, res) {
             cleanUrl = await desglosarUrl(cleanUrl);
         }
 
-        // MOTOR 1: SSSTik API (Inmune a bloqueos 403)
+        // MOTOR 1: SSSTik API
         try {
             const params = new URLSearchParams();
             params.append('id', cleanUrl);
