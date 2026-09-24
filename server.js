@@ -5,33 +5,15 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// ==========================================
-// 1. ROTACIÓN DE API KEYS (SPOTIFY RESPALDO)
-// ==========================================
-const API_KEYS = [
-    '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038',
-    'd57a57f0e6msh60d33aa70fd4bfap142a4ejsn3dd732d92d81',
-    'cfe9f96619msh2bf6f1ef96b6f5dp1ca3b8jsn55c76c99edbb',
-    'ff647c7411msh1f8a4b925654801p17bfa0jsn43708a13c350',
-    '662e02b486msh639f823b995cba3p1a1e83jsn3419c2db929d',
-    '9652174c07msh5a18f10e100709cp1f0e56jsna7079cb837cf'
-];
-
-let currentKeyIndex = 0;
-
-function getNextApiKey() {
-    const key = API_KEYS[currentKeyIndex];
-    currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-    return key;
-}
-
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
-// Función para desglosar URL cortas (TikTok/Pinterest)
+// ==========================================
+// FUNCIÓN AUXILIAR: DESGLOSAR Y EXPANDIR URLS
+// ==========================================
 async function desglosarUrl(shortUrl) {
     try {
         const response = await axios.get(shortUrl, {
@@ -40,68 +22,58 @@ async function desglosarUrl(shortUrl) {
         });
         return response.request.res.responseUrl || shortUrl;
     } catch (e) {
+        if (e.response && e.response.headers && e.response.headers.location) {
+            return e.response.headers.location.split('?')[0];
+        }
         return shortUrl;
     }
 }
 
 // ==========================================
-// PROXY DE DESCARGA DIRECTA (CONTROLADO SIN REDIRECCIÓN)
+// PROXY DE DESCARGA DIRECTA SEGURO
 // ==========================================
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
-    let fileName = req.query.name || req.query.filename || 'archivo_media';
+    let fileName = req.query.name || 'archivo_media';
 
     if (!fileUrl) {
-        return res.status(400).json({ 
-            exito: false, 
-            mensaje: 'No se pudo obtener el audio. Pruebe con otro o inténtelo más tarde.' 
-        });
+        return res.status(400).json({ exito: false, mensaje: 'URL de descarga no proporcionada.' });
     }
 
     try {
-        const response = await axios({
-            method: 'get',
-            url: fileUrl,
-            responseType: 'stream',
-            headers: {
-                'User-Agent': USER_AGENT,
-                'Accept': '*/*'
-            },
-            timeout: 20000,
+        const response = await axios.get(fileUrl, {
+            responseType: 'arraybuffer',
+            headers: { 'User-Agent': USER_AGENT },
+            timeout: 25000,
             validateStatus: (status) => status === 200
         });
 
-        const contentType = response.headers['content-type'] || 'application/octet-stream';
+        const contentType = response.headers['content-type'] || '';
+        const bufferText = Buffer.from(response.data).toString('utf-8', 0, 100);
 
-        // Si la respuesta es un XML de error (como Amazon S3 / AccessDenied), detener inmediatamente
-        if (contentType.includes('xml')) {
+        // Detectar si el servidor remoto respondió con XML de error (como Amazon S3 expirado)
+        if (contentType.includes('xml') || bufferText.includes('<Error>') || bufferText.includes('AccessDenied')) {
             return res.status(400).json({
                 exito: false,
-                mensaje: 'No se pudo obtener el audio. Pruebe con otro o inténtelo más tarde.'
+                mensaje: 'No se pudo obtener el audio. El enlace de la canción expiró o no está disponible.'
             });
         }
 
         if (!fileName.includes('.')) {
-            if (contentType.includes('audio') || contentType.includes('mpeg')) {
-                fileName += '.mp3';
-            } else {
-                fileName += '.mp4';
-            }
+            fileName += contentType.includes('video') ? '.mp4' : '.mp3';
         }
 
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
-        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Type', contentType || 'audio/mpeg');
+        res.setHeader('Content-Length', response.data.length);
 
-        // Transmisión directa de datos al navegador
-        response.data.pipe(res);
+        return res.send(Buffer.from(response.data));
 
     } catch (error) {
-        console.error('Error enviando stream de descarga:', error.message);
-        
-        // SIN REDIRECCIÓN: Si falla la descarga, responder con mensaje controlado
+        console.error('Error en proxy de descarga:', error.message);
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el audio. Pruebe con otro o inténtelo más tarde.'
+            mensaje: 'No se pudo obtener el archivo de audio. Intenta con otra canción.'
         });
     }
 });
@@ -130,18 +102,19 @@ app.post('/api/descargar', async (req, res) => {
         }
     } catch (error) {
         console.error('Error general:', error.message);
-        return res.status(500).json({ 
-            exito: false, 
-            mensaje: 'No se pudo obtener el audio. Pruebe con otro o inténtelo más tarde.' 
-        });
+        return res.status(500).json({ exito: false, mensaje: 'Error interno en el servidor.' });
     }
 });
 
 // ==========================================
-// 1. LÓGICA SPOTIFY (MULTIMOTOR)
+// 1. LÓGICA SPOTIFY
 // ==========================================
 async function procesarSpotify(input, res) {
     try {
+        if (input.includes('spotify.link')) {
+            input = await desglosarUrl(input);
+        }
+
         const match = input.match(/track\/([a-zA-Z0-9]+)/);
         if (!match) {
             return res.status(400).json({ exito: false, mensaje: 'URL de Spotify no válida.' });
@@ -149,119 +122,86 @@ async function procesarSpotify(input, res) {
         const trackId = match[1];
         const cleanUrl = `https://open.spotify.com/track/${trackId}`;
 
-        let trackTitle = 'Cancion de Spotify';
+        let trackTitle = '';
         let artistName = '';
         let coverImage = '';
 
-        // Extraer Metadatos
         try {
             const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
             if (oembedRes.data) {
-                trackTitle = oembedRes.data.title || trackTitle;
+                trackTitle = oembedRes.data.title || '';
                 artistName = oembedRes.data.author_name || '';
                 coverImage = oembedRes.data.thumbnail_url || '';
             }
         } catch (e) {
-            console.log('Error metadatos oembed:', e.message);
+            console.log('Error oEmbed:', e.message);
         }
 
-        const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
+        const titleCombined = artistName ? `${trackTitle} - ${artistName}` : (trackTitle || 'Spotify Track');
 
-        // MOTOR 1: Cobalt API
+        // MOTOR 1: SpotifyMate
         try {
-            const cobaltRes = await axios.post('https://api.cobalt.tools/api/json', {
-                url: cleanUrl,
-                downloadMode: 'audio',
-                audioFormat: 'mp3'
+            const params = new URLSearchParams();
+            params.append('url', cleanUrl);
+
+            const mateRes = await axios.post('https://spotifymate.com/action', params, {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': USER_AGENT,
+                    'Origin': 'https://spotifymate.com',
+                    'Referer': 'https://spotifymate.com/'
+                },
+                timeout: 10000
+            });
+
+            const html = mateRes.data;
+            const linkMatch = html.match(/href="(https:\/\/[^"]+\.mp3[^"]*)"/i) || html.match(/href="(https:\/\/[^"]+download[^"]*)"/i);
+
+            if (linkMatch && linkMatch[1]) {
+                const downloadUrl = linkMatch[1].replace(/&amp;/g, '&');
+                return res.json({
+                    exito: true,
+                    titulo: titleCombined,
+                    coverUrl: coverImage,
+                    audioUrl: `/api/download-file?url=${encodeURIComponent(downloadUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`
+                });
+            }
+        } catch (e) {
+            console.log('Motor 1 (SpotifyMate) falló:', e.message);
+        }
+
+        // MOTOR 2: SpotDown API
+        try {
+            const spotDownRes = await axios.post('https://spotdown.org/api/download-track', {
+                url: cleanUrl
             }, {
                 headers: {
-                    'Accept': 'application/json',
                     'Content-Type': 'application/json',
                     'User-Agent': USER_AGENT
                 },
                 timeout: 10000
             });
 
-            if (cobaltRes.data && cobaltRes.data.url) {
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(cobaltRes.data.url)}&name=${encodeURIComponent(titleCombined)}.mp3`;
+            if (spotDownRes.data && spotDownRes.data.file_url) {
                 return res.json({
                     exito: true,
                     titulo: titleCombined,
                     coverUrl: coverImage,
-                    audioUrl: proxyUrl
+                    audioUrl: `/api/download-file?url=${encodeURIComponent(spotDownRes.data.file_url)}&name=${encodeURIComponent(titleCombined)}.mp3`
                 });
             }
-        } catch (err) {
-            console.log('Motor Cobalt no disponible, intentando RapidAPI...');
+        } catch (e) {
+            console.log('Motor 2 (SpotDown) falló:', e.message);
         }
 
-        // MOTOR 2: RapidAPI (Rotación de Claves)
-        for (let i = 0; i < API_KEYS.length; i++) {
-            const currentApiKey = getNextApiKey();
-            try {
-                const rapidRes = await axios.get(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
-                    headers: {
-                        'x-rapidapi-key': currentApiKey,
-                        'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
-                    },
-                    timeout: 8000
-                });
-
-                if (rapidRes.data) {
-                    const audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.url;
-                    if (audioUrl) {
-                        const proxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
-                        return res.json({
-                            exito: true,
-                            titulo: titleCombined,
-                            coverUrl: coverImage || rapidRes.data.data?.cover,
-                            audioUrl: proxyUrl
-                        });
-                    }
-                }
-            } catch (err) {
-                console.log(`RapidAPI Key [${i + 1}] falló:`, err.message);
-            }
-        }
-
-        // MOTOR 3: Respaldo Spotifydown API
-        try {
-            const spotRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
-                headers: {
-                    'Origin': 'https://spotifydown.com',
-                    'Referer': 'https://spotifydown.com/',
-                    'User-Agent': USER_AGENT
-                },
-                timeout: 8000
-            });
-
-            if (spotRes.data && spotRes.data.success && spotRes.data.link) {
-                const audioUrl = spotRes.data.link;
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
-
-                return res.json({
-                    exito: true,
-                    titulo: spotRes.data.metadata?.title || titleCombined,
-                    coverUrl: spotRes.data.metadata?.cover || coverImage,
-                    audioUrl: proxyUrl
-                });
-            }
-        } catch (err) {
-            console.log('Falló Spotifydown:', err.message);
-        }
-
-        // Si todos los motores fallan
         return res.status(400).json({
             exito: false,
-            mensaje: 'No se pudo obtener el audio. Pruebe con otro o inténtelo más tarde.'
+            mensaje: 'No se pudo obtener el audio de esta canción. Por favor intenta más tarde o prueba con otra.'
         });
 
     } catch (e) {
-        console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ 
-            exito: false, 
-            mensaje: 'No se pudo obtener el audio. Pruebe con otro o inténtelo más tarde.' 
-        });
+        console.error('Error Spotify:', e.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error al procesar la canción.' });
     }
 }
 
@@ -276,69 +216,74 @@ async function procesarTikTok(inputUrl, res) {
             cleanUrl = await desglosarUrl(cleanUrl);
         }
 
-        // Opción 1: Lovetik
+        // MOTOR 1: SSSTik API
         try {
-            const paramsLovo = new URLSearchParams();
-            paramsLovo.append('query', cleanUrl);
+            const params = new URLSearchParams();
+            params.append('id', cleanUrl);
+            params.append('locale', 'es');
+            params.append('tt', 'RFBzT241');
 
-            const lovoRes = await axios.post('https://lovetik.com/api/ajax/search', paramsLovo, {
+            const sssRes = await axios.post('https://ssstik.io/abc?url=dl', params, {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': USER_AGENT
-                }
+                    'User-Agent': USER_AGENT,
+                    'Origin': 'https://ssstik.io',
+                    'Referer': 'https://ssstik.io/es'
+                },
+                timeout: 10000
             });
 
-            if (lovoRes.data && lovoRes.data.links && lovoRes.data.links.length > 0) {
-                const directUrl = lovoRes.data.links[0].a;
-                const title = lovoRes.data.desc || 'TikTok_Video';
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(title)}.mp4`;
+            const html = sssRes.data;
+            const videoMatch = html.match(/href="(https:\/\/[^"]+\.ssstik\.io[^"]+)"/i) || html.match(/href="(https:\/\/[^"]+tik-cdn[^"]+)"/i);
+
+            if (videoMatch && videoMatch[1]) {
+                return res.json({
+                    exito: true,
+                    videoUrlHD: `/api/download-file?url=${encodeURIComponent(videoMatch[1])}&name=TikTok_Video.mp4`,
+                    videoUrl: `/api/download-file?url=${encodeURIComponent(videoMatch[1])}&name=TikTok_Video.mp4`,
+                    titulo: 'TikTok Video'
+                });
+            }
+        } catch (e) {
+            console.log('TikTok SSSTik falló:', e.message);
+        }
+
+        // MOTOR 2: TikWM API
+        try {
+            const formData = new URLSearchParams();
+            formData.append('url', cleanUrl);
+            formData.append('hd', '1');
+
+            const response = await axios.post('https://www.tikwm.com/api/', formData, {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': USER_AGENT
+                },
+                timeout: 10000
+            });
+
+            if (response.data && response.data.data) {
+                const data = response.data.data;
+                const videoUrl = data.hdplay || data.play;
+                const finalUrl = videoUrl.startsWith('http') ? videoUrl : `https://www.tikwm.com${videoUrl}`;
+                const title = data.title || 'TikTok_Video';
 
                 return res.json({
                     exito: true,
-                    videoUrlHD: proxyUrl,
-                    videoUrl: proxyUrl,
+                    videoUrlHD: `/api/download-file?url=${encodeURIComponent(finalUrl)}&name=${encodeURIComponent(title)}.mp4`,
+                    videoUrl: `/api/download-file?url=${encodeURIComponent(finalUrl)}&name=${encodeURIComponent(title)}.mp4`,
                     titulo: title
                 });
             }
         } catch (e) {
-            console.log('Falló Lovetik, intentando SSSTik...');
-        }
-
-        // Opción 2: SSSTik
-        const params = new URLSearchParams();
-        params.append('id', cleanUrl);
-        params.append('locale', 'es');
-        params.append('tt', '0');
-
-        const response = await axios.post('https://ssstik.io/abc?url=dl', params, {
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': USER_AGENT,
-                'Origin': 'https://ssstik.io',
-                'Referer': 'https://ssstik.io/es'
-            }
-        });
-
-        const html = response.data;
-        const linkMatch = html.match(/href="(https:\/\/[^"]+)"[^>]*class="[^"]*download_link/i) || html.match(/href="(https:\/\/[^"]+)"/i);
-
-        if (linkMatch && linkMatch[1]) {
-            const rawVideoUrl = linkMatch[1];
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
-
-            return res.json({
-                exito: true,
-                videoUrlHD: proxyUrl,
-                videoUrl: proxyUrl,
-                titulo: 'TikTok Video'
-            });
+            console.log('TikTok TikWM falló:', e.message);
         }
 
         return res.status(400).json({ exito: false, mensaje: 'No se pudo obtener el video de TikTok.' });
 
     } catch (err) {
         console.error('Error TikTok:', err.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar TikTok.' });
+        return res.status(500).json({ exito: false, mensaje: 'Error interno en TikTok.' });
     }
 }
 
@@ -348,25 +293,19 @@ async function procesarTikTok(inputUrl, res) {
 async function procesarPinterest(inputUrl, res) {
     try {
         const response = await axios.get(inputUrl, {
-            headers: { 'User-Agent': USER_AGENT }
+            headers: { 'User-Agent': USER_AGENT },
+            timeout: 10000
         });
 
         const html = response.data;
-
-        const videoMatch = html.match(/https:\/\/[^"]+\.mp4/gi) || 
-                           html.match(/"video_list":\{"V_720P":\{"url":"(https?:\/\/[^"]+)"/i) ||
-                           html.match(/"url":"(https:\/\/v1\.pinimg\.com\/videos\/[^\"]+)"/i);
+        const videoMatch = html.match(/https:\/\/[^"]+\.mp4/gi);
 
         if (videoMatch && videoMatch[0]) {
             let rawVideoUrl = videoMatch[0].replace(/\\/g, '');
-            if (videoMatch[1]) rawVideoUrl = videoMatch[1].replace(/\\/g, '');
-
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=Pinterest_Video.mp4`;
-
             return res.json({
                 exito: true,
-                videoUrlHD: proxyUrl,
-                videoUrl: proxyUrl,
+                videoUrlHD: `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=Pinterest_Video.mp4`,
+                videoUrl: `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=Pinterest_Video.mp4`,
                 titulo: 'Pinterest Video'
             });
         }
@@ -378,4 +317,6 @@ async function procesarPinterest(inputUrl, res) {
     }
 }
 
-app.listen(PORT, () => console.log(`Servidor activo en el puerto ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Servidor activo en el puerto ${PORT}`);
+});
