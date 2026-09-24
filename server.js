@@ -235,7 +235,7 @@ async function procesarSpotify(input, res) {
             console.log('Falló Spotifydown:', err.message);
         }
 
-        // Mensaje cuando fallan o se agotan las peticiones
+        // Si fallan todos los motores de Spotify
         return res.status(400).json({
             exito: false,
             mensaje: 'limite de descarga de spotify alcanzado por hoy. intentelo de nuevo mañana'
