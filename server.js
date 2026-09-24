@@ -29,7 +29,6 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Función para expandir enlaces acortados (vt.tiktok.com)
 async function desglosarUrl(shortUrl) {
     try {
         const response = await axios.get(shortUrl, {
@@ -73,7 +72,7 @@ app.post('/api/descargar', async (req, res) => {
 });
 
 // ==========================================
-// PROXY DE DESCARGA DIRECTA (OPTIMIZADO)
+// PROXY DE DESCARGA DIRECTA (SIN REDIRECCIÓN CAÍDA)
 // ==========================================
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
@@ -84,10 +83,13 @@ app.get('/api/download-file', async (req, res) => {
     }
 
     try {
-        const response = await axios.get(fileUrl, {
+        const response = await axios({
+            method: 'get',
+            url: fileUrl,
             responseType: 'stream',
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*'
             }
         });
 
@@ -104,19 +106,40 @@ app.get('/api/download-file', async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
         res.setHeader('Content-Type', contentType);
         
-        // Transmite el archivo directamente al cliente sin saturar la RAM
         response.data.pipe(res);
 
     } catch (error) {
-        console.error('Error proxy descarga, redirigiendo directamente:', error.message);
-        // Si el proxy falla por un bloqueo de IP o token expirado, redirigimos al usuario al link directo
-        return res.redirect(fileUrl);
+        console.error('Error procesando el enlace temporal proxy:', error.message);
+        return res.status(410).send('El enlace de descarga ha expirado. Por favor, realiza la búsqueda nuevamente.');
     }
 });
 
 // ==========================================
 // 1. LÓGICA SPOTIFY
 // ==========================================
+async function obtenerLinkRapidAPI(cleanUrl) {
+    for (let i = 0; i < API_KEYS.length; i++) {
+        const currentApiKey = getNextApiKey();
+        try {
+            const rapidRes = await axios.get(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
+                headers: {
+                    'x-rapidapi-key': currentApiKey,
+                    'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
+                },
+                timeout: 8000
+            });
+
+            if (rapidRes.data) {
+                const audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.url;
+                if (audioUrl) return audioUrl;
+            }
+        } catch (err) {
+            console.log(`Intento Spotify Key [${i + 1}] falló:`, err.message);
+        }
+    }
+    return null;
+}
+
 async function procesarSpotify(input, res) {
     try {
         const match = input.match(/track\/([a-zA-Z0-9]+)/);
@@ -143,65 +166,43 @@ async function procesarSpotify(input, res) {
 
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
 
-        // MOTOR 1: Spotifydownloader RapidAPI (Rotación de claves)
-        for (let i = 0; i < API_KEYS.length; i++) {
-            const currentApiKey = getNextApiKey();
+        // Intentar primero con la API de RapidAPI (Enlaces directos más estables)
+        let audioUrl = await obtenerLinkRapidAPI(cleanUrl);
 
+        // Si falla RapidAPI, intentar con Spotifydown
+        if (!audioUrl) {
             try {
-                const rapidRes = await axios.get(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
+                const spotRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
                     headers: {
-                        'x-rapidapi-key': currentApiKey,
-                        'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
-                    }
+                        'Origin': 'https://spotifydown.com',
+                        'Referer': 'https://spotifydown.com/',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    },
+                    timeout: 8000
                 });
 
-                if (rapidRes.data) {
-                    const audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.url;
-
-                    if (audioUrl) {
-                        const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
-
-                        return res.json({
-                            exito: true,
-                            titulo: titleCombined,
-                            coverUrl: coverImage || rapidRes.data.data?.cover,
-                            audioUrl: directDownloadProxyUrl
-                        });
-                    }
+                if (spotRes.data && spotRes.data.success && spotRes.data.link) {
+                    audioUrl = spotRes.data.link;
                 }
             } catch (err) {
-                console.log(`Intento Spotify Key [${i + 1}] falló:`, err.message);
+                console.log('Falló motor secundario Spotifydown:', err.message);
             }
         }
 
-        // MOTOR 2: Respaldo Spotifydown API
-        try {
-            const spotRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
-                headers: {
-                    'Origin': 'https://spotifydown.com',
-                    'Referer': 'https://spotifydown.com/',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                }
+        if (audioUrl) {
+            const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
+
+            return res.json({
+                exito: true,
+                titulo: titleCombined,
+                coverUrl: coverImage,
+                audioUrl: directDownloadProxyUrl
             });
-
-            if (spotRes.data && spotRes.data.success && spotRes.data.link) {
-                const audioUrl = spotRes.data.link;
-                const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
-
-                return res.json({
-                    exito: true,
-                    titulo: spotRes.data.metadata?.title || titleCombined,
-                    coverUrl: spotRes.data.metadata?.cover || coverImage,
-                    audioUrl: directDownloadProxyUrl
-                });
-            }
-        } catch (err) {
-            console.log('Falló motor secundario Spotifydown:', err.message);
         }
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'Límite diario alcanzado en Spotify. Vuelve a intentarlo mañana.'
+            mensaje: 'No se pudo generar la descarga en este momento. Inténtalo nuevamente.'
         });
 
     } catch (e) {
@@ -211,7 +212,7 @@ async function procesarSpotify(input, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (MULTI-API EN CASCADA CON DESGLOSE DE URL)
+// 2. LÓGICA TIKTOK
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
@@ -221,7 +222,6 @@ async function procesarTikTok(inputUrl, res) {
             cleanUrl = await desglosarUrl(cleanUrl);
         }
 
-        // --- OPCIÓN 1: API Lovetik ---
         try {
             const paramsLovo = new URLSearchParams();
             paramsLovo.append('query', cleanUrl);
@@ -249,7 +249,6 @@ async function procesarTikTok(inputUrl, res) {
             console.log('Falló Lovetik, intentando con SSSTik...');
         }
 
-        // --- OPCIÓN 2: SSSTik ---
         const params = new URLSearchParams();
         params.append('id', cleanUrl);
         params.append('locale', 'es');
