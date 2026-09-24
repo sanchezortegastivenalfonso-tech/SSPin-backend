@@ -73,7 +73,7 @@ app.post('/api/descargar', async (req, res) => {
 });
 
 // ==========================================
-// PROXY DE DESCARGA DIRECTA
+// PROXY DE DESCARGA DIRECTA (OPTIMIZADO)
 // ==========================================
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
@@ -85,7 +85,7 @@ app.get('/api/download-file', async (req, res) => {
 
     try {
         const response = await axios.get(fileUrl, {
-            responseType: 'arraybuffer',
+            responseType: 'stream',
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
@@ -103,11 +103,14 @@ app.get('/api/download-file', async (req, res) => {
 
         res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
         res.setHeader('Content-Type', contentType);
-        res.send(Buffer.from(response.data));
+        
+        // Transmite el archivo directamente al cliente sin saturar la RAM
+        response.data.pipe(res);
 
     } catch (error) {
-        console.error('Error proxy descarga:', error.message);
-        res.status(500).send('Error al procesar la descarga directa');
+        console.error('Error proxy descarga, redirigiendo directamente:', error.message);
+        // Si el proxy falla por un bloqueo de IP o token expirado, redirigimos al usuario al link directo
+        return res.redirect(fileUrl);
     }
 });
 
@@ -140,32 +143,7 @@ async function procesarSpotify(input, res) {
 
         const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
 
-        // MOTOR 1: Spotifydown API (Sin clave, directo y con bitrate correcto)
-        try {
-            const spotRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
-                headers: {
-                    'Origin': 'https://spotifydown.com',
-                    'Referer': 'https://spotifydown.com/',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                }
-            });
-
-            if (spotRes.data && spotRes.data.success && spotRes.data.link) {
-                const audioUrl = spotRes.data.link;
-                const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
-
-                return res.json({
-                    exito: true,
-                    titulo: spotRes.data.metadata?.title || titleCombined,
-                    coverUrl: spotRes.data.metadata?.cover || coverImage,
-                    audioUrl: directDownloadProxyUrl
-                });
-            }
-        } catch (err) {
-            console.log('Falló motor primario Spotifydown, intentando rotación de API Keys...');
-        }
-
-        // MOTOR 2: Rotación RapidAPI
+        // MOTOR 1: Spotifydownloader RapidAPI (Rotación de claves)
         for (let i = 0; i < API_KEYS.length; i++) {
             const currentApiKey = getNextApiKey();
 
@@ -194,6 +172,31 @@ async function procesarSpotify(input, res) {
             } catch (err) {
                 console.log(`Intento Spotify Key [${i + 1}] falló:`, err.message);
             }
+        }
+
+        // MOTOR 2: Respaldo Spotifydown API
+        try {
+            const spotRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
+                headers: {
+                    'Origin': 'https://spotifydown.com',
+                    'Referer': 'https://spotifydown.com/',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                }
+            });
+
+            if (spotRes.data && spotRes.data.success && spotRes.data.link) {
+                const audioUrl = spotRes.data.link;
+                const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
+
+                return res.json({
+                    exito: true,
+                    titulo: spotRes.data.metadata?.title || titleCombined,
+                    coverUrl: spotRes.data.metadata?.cover || coverImage,
+                    audioUrl: directDownloadProxyUrl
+                });
+            }
+        } catch (err) {
+            console.log('Falló motor secundario Spotifydown:', err.message);
         }
 
         return res.status(400).json({
