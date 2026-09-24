@@ -198,7 +198,7 @@ async function procesarSpotify(input, res) {
 
         return res.status(400).json({
             exito: false,
-            mensaje: 'Hubo una demora al conectar. Vuelve a hacer clic en Descargar. Si el mensaje persiste, significa que el límite diario de Spotify se ha alcanzado por hoy. Inténtalo de nuevo mañana.'
+            mensaje: 'Hubo una demora al conectar. Vuelve a hacer clic en Descargar o coloca otro enlace. Si el mensaje persiste, significa que el límite diario de Spotify se ha alcanzado por hoy. Inténtalo de nuevo mañana.'
         });
 
     } catch (e) {
