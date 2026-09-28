@@ -218,6 +218,8 @@ async function procesarTikTok(inputUrl, res) {
             cleanUrl = await desglosarUrl(cleanUrl);
         }
 
+        const timestamp = Date.now();
+
         // --- OPCIÓN 1: API Lovetik ---
         try {
             const paramsLovo = new URLSearchParams();
@@ -232,8 +234,9 @@ async function procesarTikTok(inputUrl, res) {
 
             if (lovoRes.data && lovoRes.data.links && lovoRes.data.links.length > 0) {
                 const directUrl = lovoRes.data.links[0].a;
-                const title = lovoRes.data.desc || 'TikTok_Video';
-                const proxyUrl = `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(title)}.mp4`;
+                const title = lovoRes.data.desc || `TikTok_Video_${timestamp}`;
+                const fileName = `${title}_${timestamp}`;
+                const proxyUrl = `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(fileName)}.mp4`;
 
                 return res.json({
                     exito: true,
@@ -266,7 +269,8 @@ async function procesarTikTok(inputUrl, res) {
 
         if (linkMatch && linkMatch[1]) {
             const rawVideoUrl = linkMatch[1];
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=TikTok_Video.mp4`;
+            const fileName = `TikTok_Video_${timestamp}`;
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(fileName)}.mp4`;
 
             return res.json({
                 exito: true,
@@ -305,7 +309,9 @@ async function procesarPinterest(inputUrl, res) {
             let rawVideoUrl = videoMatch[0].replace(/\\/g, '');
             if (videoMatch[1]) rawVideoUrl = videoMatch[1].replace(/\\/g, '');
 
-            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=Pinterest_Video.mp4`;
+            const timestamp = Date.now();
+            const fileName = `Pinterest_Video_${timestamp}`;
+            const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(fileName)}.mp4`;
 
             return res.json({
                 exito: true,
