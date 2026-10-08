@@ -90,91 +90,93 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA INSTAGRAM (ROBUSTA)
+// 1. LÓGICA INSTAGRAM (OPTIMIZADA)
 // ==========================================
 async function procesarInstagram(inputUrl, res) {
     try {
         const timestamp = Date.now();
         let videoUrl = null;
 
+        // Limpiar URL eliminando parámetos basura (?igsh=...)
         const cleanUrl = inputUrl.split('?')[0].replace(/\/+$/, '');
 
-        // MOTOR 1: Cobalt API con cabeceras de origen correctas
+        // MOTOR 1: API Directa DDInstagram (Resuelve reels directamente)
         try {
-            const cobaltRes = await axios.post('https://api.cobalt.tools/api/json', {
-                url: cleanUrl
-            }, {
+            const ddUrl = cleanUrl.replace('instagram.com', 'ddinstagram.com');
+            const ddRes = await axios.get(ddUrl, {
                 headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json',
-                    'User-Agent': UA,
-                    'Origin': 'https://cobalt.tools',
-                    'Referer': 'https://cobalt.tools/'
+                    'User-Agent': 'telegrambot (like twitterbot)',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
                 },
-                timeout: 12000
+                timeout: 10000
             });
 
-            if (cobaltRes.data && cobaltRes.data.url) {
-                videoUrl = cobaltRes.data.url;
-                console.log('Instagram OK con Motor 1 (Cobalt)');
+            const html = ddRes.data;
+            const match = html.match(/<meta[^>]+property="og:video(?::secure_url)?"[^>]+content="([^"]+)"/i) ||
+                          html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:video(?::secure_url)?"/i) ||
+                          html.match(/<source[^>]+src="([^"]+)"/i);
+
+            if (match && match[1]) {
+                videoUrl = match[1].replace(/&amp;/g, '&');
+                console.log('Instagram OK con Motor 1 (DDInstagram)');
             }
         } catch (e) {
-            console.log('Falló Motor 1 Cobalt:', e.response ? e.response.status : e.message);
+            console.log('Falló Motor 1 DDInstagram:', e.message);
         }
 
-        // MOTOR 2: SnapInsta API Proxy
+        // MOTOR 2: FastDL Endpoint
         if (!videoUrl) {
             try {
                 const params = new URLSearchParams();
-                params.append('url', cleanUrl);
-                params.append('action', 'post');
+                params.append('q', cleanUrl);
+                params.append('vt', 'facebook');
 
-                const snapRes = await axios.post('https://snapinsta.app/action2.php', params, {
+                const fastRes = await axios.post('https://v3.fastdl.app/api/ajaxSearch', params, {
                     headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                         'User-Agent': UA,
-                        'Origin': 'https://snapinsta.app',
-                        'Referer': 'https://snapinsta.app/'
+                        'Origin': 'https://fastdl.app',
+                        'Referer': 'https://fastdl.app/'
                     },
                     timeout: 10000
                 });
 
-                if (snapRes.data) {
-                    const html = snapRes.data;
-                    const match = html.match(/href=\\"(https:\/\/[^"\\]+\.mp4[^"\\]*)\\"/i) || 
-                                  html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) ||
-                                  html.match(/href="(https:\/\/[^"]+download[^"]*)"/i);
+                if (fastRes.data && fastRes.data.data) {
+                    const html = fastRes.data.data;
+                    const match = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || 
+                                  html.match(/href="(https:\/\/scontent[^"]+)"/i);
                     if (match && match[1]) {
-                        videoUrl = match[1].replace(/\\/g, '').replace(/&amp;/g, '&');
-                        console.log('Instagram OK con Motor 2 (SnapInsta)');
+                        videoUrl = match[1].replace(/&amp;/g, '&');
+                        console.log('Instagram OK con Motor 2 (FastDL)');
                     }
                 }
             } catch (e) {
-                console.log('Falló Motor 2 SnapInsta:', e.message);
+                console.log('Falló Motor 2 FastDL:', e.message);
             }
         }
 
-        // MOTOR 3: Embed Query con User-Agent de móvil
+        // MOTOR 3: Fallback Cobalt API
         if (!videoUrl) {
             try {
-                const embedRes = await axios.get(`${cleanUrl}/embed/captioned/`, {
+                const cobaltRes = await axios.post('https://api.cobalt.tools/api/json', {
+                    url: cleanUrl
+                }, {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-                        'Accept-Language': 'en-US,en;q=0.9'
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'User-Agent': UA,
+                        'Origin': 'https://cobalt.tools',
+                        'Referer': 'https://cobalt.tools/'
                     },
                     timeout: 10000
                 });
 
-                const html = embedRes.data;
-                const match = html.match(/\\*"video_url\\*"\s*:\s*\\*"(https:[^"]+?)\\*"/i) ||
-                              html.match(/<meta[^>]+property="og:video"[^>]+content="([^"]+)"/i);
-
-                if (match && match[1]) {
-                    videoUrl = match[1].replace(/\\+\//g, '/').replace(/\\+u0026/g, '&').replace(/&amp;/g, '&');
-                    console.log('Instagram OK con Motor 3 (Embed)');
+                if (cobaltRes.data && cobaltRes.data.url) {
+                    videoUrl = cobaltRes.data.url;
+                    console.log('Instagram OK con Motor 3 (Cobalt)');
                 }
             } catch (e) {
-                console.log('Falló Motor 3 Embed:', e.message);
+                console.log('Falló Motor 3 Cobalt:', e.message);
             }
         }
 
