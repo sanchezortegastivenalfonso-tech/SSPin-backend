@@ -90,93 +90,100 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA INSTAGRAM (OPTIMIZADA)
+// 1. LÓGICA INSTAGRAM (ESTABLE CON SNAPSAVE/GRAPHQL)
 // ==========================================
 async function procesarInstagram(inputUrl, res) {
     try {
         const timestamp = Date.now();
         let videoUrl = null;
 
-        // Limpiar URL eliminando parámetos basura (?igsh=...)
         const cleanUrl = inputUrl.split('?')[0].replace(/\/+$/, '');
+        const match = cleanUrl.match(/instagram\.com\/(?:[^\/?#]+\/)?(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
 
-        // MOTOR 1: API Directa DDInstagram (Resuelve reels directamente)
+        if (!match) {
+            return res.status(400).json({ exito: false, mensaje: 'Enlace de Instagram no válido. Usa un enlace de reel o publicación.' });
+        }
+
+        const shortcode = match[2];
+
+        // MOTOR 1: SnapSave API
         try {
-            const ddUrl = cleanUrl.replace('instagram.com', 'ddinstagram.com');
-            const ddRes = await axios.get(ddUrl, {
+            const params = new URLSearchParams();
+            params.append('url', cleanUrl);
+
+            const snapRes = await axios.post('https://snapsave.app/action.php', params, {
                 headers: {
-                    'User-Agent': 'telegrambot (like twitterbot)',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': UA,
+                    'Origin': 'https://snapsave.app',
+                    'Referer': 'https://snapsave.app/'
                 },
                 timeout: 10000
             });
 
-            const html = ddRes.data;
-            const match = html.match(/<meta[^>]+property="og:video(?::secure_url)?"[^>]+content="([^"]+)"/i) ||
-                          html.match(/<meta[^>]+content="([^"]+)"[^>]+property="og:video(?::secure_url)?"/i) ||
-                          html.match(/<source[^>]+src="([^"]+)"/i);
+            if (snapRes.data) {
+                const html = String(snapRes.data);
+                const matchUrl = html.match(/href=\\"(https:\/\/[^"\\]+\.mp4[^"\\]*)\\"/i) ||
+                                 html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) ||
+                                 html.match(/https:\/\/[^"\\]+cdninstagram\.com[^"\\]+/i);
 
-            if (match && match[1]) {
-                videoUrl = match[1].replace(/&amp;/g, '&');
-                console.log('Instagram OK con Motor 1 (DDInstagram)');
+                if (matchUrl && matchUrl[0]) {
+                    videoUrl = (matchUrl[1] || matchUrl[0]).replace(/\\/g, '').replace(/&amp;/g, '&');
+                    console.log('Instagram OK con Motor 1 (SnapSave)');
+                }
             }
         } catch (e) {
-            console.log('Falló Motor 1 DDInstagram:', e.message);
+            console.log('Falló Motor 1 SnapSave:', e.message);
         }
 
-        // MOTOR 2: FastDL Endpoint
+        // MOTOR 2: Instagram GraphQL Query Directo
         if (!videoUrl) {
             try {
-                const params = new URLSearchParams();
-                params.append('q', cleanUrl);
-                params.append('vt', 'facebook');
-
-                const fastRes = await axios.post('https://v3.fastdl.app/api/ajaxSearch', params, {
+                const gqlRes = await axios.get('https://www.instagram.com/graphql/query/', {
+                    params: {
+                        doc_id: '8845758582119845',
+                        variables: JSON.stringify({ shortcode })
+                    },
                     headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                        'User-Agent': UA,
-                        'Origin': 'https://fastdl.app',
-                        'Referer': 'https://fastdl.app/'
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                        'X-IG-App-ID': '936619743392459',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': '*/*'
                     },
                     timeout: 10000
                 });
 
-                if (fastRes.data && fastRes.data.data) {
-                    const html = fastRes.data.data;
-                    const match = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || 
-                                  html.match(/href="(https:\/\/scontent[^"]+)"/i);
-                    if (match && match[1]) {
-                        videoUrl = match[1].replace(/&amp;/g, '&');
-                        console.log('Instagram OK con Motor 2 (FastDL)');
-                    }
+                const media = gqlRes.data && gqlRes.data.data && (gqlRes.data.data.xdt_shortcode_media || gqlRes.data.data.shortcode_media);
+                if (media && media.video_url) {
+                    videoUrl = media.video_url;
+                    console.log('Instagram OK con Motor 2 (GraphQL Directo)');
                 }
             } catch (e) {
-                console.log('Falló Motor 2 FastDL:', e.message);
+                console.log('Falló Motor 2 GraphQL:', e.message);
             }
         }
 
-        // MOTOR 3: Fallback Cobalt API
+        // MOTOR 3: Instagram Embed API (Fallback)
         if (!videoUrl) {
             try {
-                const cobaltRes = await axios.post('https://api.cobalt.tools/api/json', {
-                    url: cleanUrl
-                }, {
+                const embedRes = await axios.get(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, {
                     headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json',
-                        'User-Agent': UA,
-                        'Origin': 'https://cobalt.tools',
-                        'Referer': 'https://cobalt.tools/'
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                        'Accept-Language': 'en-US,en;q=0.9'
                     },
                     timeout: 10000
                 });
 
-                if (cobaltRes.data && cobaltRes.data.url) {
-                    videoUrl = cobaltRes.data.url;
-                    console.log('Instagram OK con Motor 3 (Cobalt)');
+                const html = embedRes.data;
+                const matchEmbed = html.match(/\\*"video_url\\*"\s*:\s*\\*"(https:[^"]+?)\\*"/i) ||
+                                   html.match(/<meta[^>]+property="og:video"[^>]+content="([^"]+)"/i);
+
+                if (matchEmbed && matchEmbed[1]) {
+                    videoUrl = matchEmbed[1].replace(/\\+\//g, '/').replace(/\\+u0026/g, '&').replace(/&amp;/g, '&');
+                    console.log('Instagram OK con Motor 3 (Embed)');
                 }
             } catch (e) {
-                console.log('Falló Motor 3 Cobalt:', e.message);
+                console.log('Falló Motor 3 Embed:', e.message);
             }
         }
 
