@@ -90,17 +90,15 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA INSTAGRAM (SOPORTE DE CHARS ESPECIALES Y TOKENS)
+// 1. LÓGICA INSTAGRAM (ENFOQUE HÍBRIDO HASTA GRAPHQL)
 // ==========================================
 async function procesarInstagram(inputUrl, res) {
     try {
         const timestamp = Date.now();
         let videoUrl = null;
 
-        // 1. Decodificar URL para limpiar caracteres %3D (==) u otros símbolos
-        let decodedUrl = decodeURIComponent(inputUrl.trim());
-
-        // 2. Extraer shortcode permitiendo guiones bajos y guiones al final
+        // Decodificar URL y extraer shortcode exacto conservando guiones e identificadores especiales
+        const decodedUrl = decodeURIComponent(inputUrl.trim());
         const match = decodedUrl.match(/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
 
         if (!match || !match[1]) {
@@ -110,7 +108,7 @@ async function procesarInstagram(inputUrl, res) {
         const shortcode = match[1];
         const targetUrl = `https://www.instagram.com/reel/${shortcode}/`;
 
-        // MOTOR 1: FastDL AJAX Parser
+        // MOTOR 1: FastDL Ajax Engine
         try {
             const formData = new URLSearchParams();
             formData.append('q', targetUrl);
@@ -123,14 +121,13 @@ async function procesarInstagram(inputUrl, res) {
                     'Origin': 'https://fastdl.app',
                     'Referer': 'https://fastdl.app/'
                 },
-                timeout: 8000
+                timeout: 6000
             });
 
             if (fastRes.data && fastRes.data.data) {
                 const html = fastRes.data.data;
                 const matchVideo = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) ||
-                                   html.match(/href="(https:\/\/[^"]+cdninstagram\.com[^"]*)"/i) ||
-                                   html.match(/href="(https:\/\/[^"]+download[^"]*)"/i);
+                                   html.match(/href="(https:\/\/[^"]+cdninstagram\.com[^"]*)"/i);
 
                 if (matchVideo && matchVideo[1]) {
                     videoUrl = matchVideo[1].replace(/&amp;/g, '&');
@@ -141,40 +138,35 @@ async function procesarInstagram(inputUrl, res) {
             console.log('Falló Motor 1 FastDL:', e.message);
         }
 
-        // MOTOR 2: SnapInsta direct API
+        // MOTOR 2: Direct IG GraphQL Query (Resistente a bloqueos de datacenter)
         if (!videoUrl) {
             try {
-                const params = new URLSearchParams();
-                params.append('url', targetUrl);
-                params.append('action', 'post');
+                const gqlParams = new URLSearchParams();
+                gqlParams.append('doc_id', '10015901848480574');
+                gqlParams.append('variables', JSON.stringify({ shortcode: shortcode }));
 
-                const snapRes = await axios.post('https://snapinsta.app/action2.php', params, {
+                const gqlRes = await axios.post('https://www.instagram.com/api/v1/ads/graph_ql/', gqlParams, {
                     headers: {
+                        'User-Agent': 'Instagram 219.0.0.12.117 Android',
                         'Content-Type': 'application/x-www-form-urlencoded',
-                        'User-Agent': UA,
-                        'Origin': 'https://snapinsta.app',
-                        'Referer': 'https://snapinsta.app/'
+                        'X-FB-Friendly-Name': 'PolarisPostQuery'
                     },
-                    timeout: 8000
+                    timeout: 6000
                 });
 
-                if (snapRes.data) {
-                    const htmlData = typeof snapRes.data === 'string' ? snapRes.data : JSON.stringify(snapRes.data);
-                    const matchMp4 = htmlData.match(/href=\\"(https:\/\/[^"\\]+\.mp4[^"\\]*)\\"/i) ||
-                                     htmlData.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) ||
-                                     htmlData.match(/https:\/\/[^"\\]+cdninstagram\.com[^"\\]+/i);
-
-                    if (matchMp4 && matchMp4[0]) {
-                        videoUrl = (matchMp4[1] || matchMp4[0]).replace(/\\/g, '').replace(/&amp;/g, '&');
-                        console.log('Instagram OK con Motor 2 (SnapInsta)');
+                if (gqlRes.data && gqlRes.data.data && gqlRes.data.data.xdt_shortcode_media) {
+                    const media = gqlRes.data.data.xdt_shortcode_media;
+                    if (media.is_video && media.video_url) {
+                        videoUrl = media.video_url;
+                        console.log('Instagram OK con Motor 2 (IG GraphQL Direct)');
                     }
                 }
             } catch (e) {
-                console.log('Falló Motor 2 SnapInsta:', e.message);
+                console.log('Falló Motor 2 IG GraphQL:', e.message);
             }
         }
 
-        // MOTOR 3: Embed Query con Shortcode limpio
+        // MOTOR 3: Embed Native Query
         if (!videoUrl) {
             try {
                 const embedRes = await axios.get(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, {
@@ -182,7 +174,7 @@ async function procesarInstagram(inputUrl, res) {
                         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
                         'Accept-Language': 'en-US,en;q=0.9'
                     },
-                    timeout: 8000
+                    timeout: 6000
                 });
 
                 const html = embedRes.data;
