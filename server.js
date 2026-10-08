@@ -90,17 +90,16 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA INSTAGRAM (REPARADA)
+// 1. LÓGICA INSTAGRAM (ROBUSTA)
 // ==========================================
 async function procesarInstagram(inputUrl, res) {
     try {
         const timestamp = Date.now();
         let videoUrl = null;
 
-        // Limpieza estricta de la URL de Instagram
         const cleanUrl = inputUrl.split('?')[0].replace(/\/+$/, '');
 
-        // MOTOR 1: Cobalt API Direct (Formato de payload exacto)
+        // MOTOR 1: Cobalt API con cabeceras de origen correctas
         try {
             const cobaltRes = await axios.post('https://api.cobalt.tools/api/json', {
                 url: cleanUrl
@@ -108,7 +107,9 @@ async function procesarInstagram(inputUrl, res) {
                 headers: {
                     'Accept': 'application/json',
                     'Content-Type': 'application/json',
-                    'User-Agent': UA
+                    'User-Agent': UA,
+                    'Origin': 'https://cobalt.tools',
+                    'Referer': 'https://cobalt.tools/'
                 },
                 timeout: 12000
             });
@@ -121,31 +122,44 @@ async function procesarInstagram(inputUrl, res) {
             console.log('Falló Motor 1 Cobalt:', e.response ? e.response.status : e.message);
         }
 
-        // MOTOR 2: Indown API
+        // MOTOR 2: SnapInsta API Proxy
         if (!videoUrl) {
             try {
-                const indownRes = await axios.get(`https://indown.io/download?link=${encodeURIComponent(cleanUrl)}`, {
-                    headers: { 'User-Agent': UA },
+                const params = new URLSearchParams();
+                params.append('url', cleanUrl);
+                params.append('action', 'post');
+
+                const snapRes = await axios.post('https://snapinsta.app/action2.php', params, {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': UA,
+                        'Origin': 'https://snapinsta.app',
+                        'Referer': 'https://snapinsta.app/'
+                    },
                     timeout: 10000
                 });
 
-                const html = indownRes.data;
-                const match = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || html.match(/<source[^>]+src="([^"]+)"/i);
-                if (match && match[1]) {
-                    videoUrl = match[1].replace(/&amp;/g, '&');
-                    console.log('Instagram OK con Motor 2 (Indown)');
+                if (snapRes.data) {
+                    const html = snapRes.data;
+                    const match = html.match(/href=\\"(https:\/\/[^"\\]+\.mp4[^"\\]*)\\"/i) || 
+                                  html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) ||
+                                  html.match(/href="(https:\/\/[^"]+download[^"]*)"/i);
+                    if (match && match[1]) {
+                        videoUrl = match[1].replace(/\\/g, '').replace(/&amp;/g, '&');
+                        console.log('Instagram OK con Motor 2 (SnapInsta)');
+                    }
                 }
             } catch (e) {
-                console.log('Falló Motor 2 Indown:', e.message);
+                console.log('Falló Motor 2 SnapInsta:', e.message);
             }
         }
 
-        // MOTOR 3: Embed HTML Parser Directo
+        // MOTOR 3: Embed Query con User-Agent de móvil
         if (!videoUrl) {
             try {
                 const embedRes = await axios.get(`${cleanUrl}/embed/captioned/`, {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
                         'Accept-Language': 'en-US,en;q=0.9'
                     },
                     timeout: 10000
