@@ -90,82 +90,95 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA INSTAGRAM (DEFINITIVA CON SNAPINSTA/COBALT)
+// 1. LÓGICA INSTAGRAM (LIMPIEZA DE TOKENS & MULTI-MOTOR)
 // ==========================================
 async function procesarInstagram(inputUrl, res) {
     try {
         const timestamp = Date.now();
         let videoUrl = null;
 
-        // Limpieza de URL
-        const match = inputUrl.match(/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
+        // Limpieza agresiva de tokens de compartir (?stkn=..., ?igsh=...)
+        const cleanBase = inputUrl.split('?')[0].replace(/\/+$/, '');
+        const match = cleanBase.match(/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
+
         if (!match || !match[1]) {
             return res.status(400).json({ exito: false, mensaje: 'Enlace de Instagram no válido.' });
         }
 
         const shortcode = match[1];
-        const cleanUrl = `https://www.instagram.com/reel/${shortcode}/`;
+        const targetUrl = `https://www.instagram.com/reel/${shortcode}/`;
 
-        // MOTOR 1: SnapInsta Action API
+        // MOTOR 1: SaveInsta Engine Direct API
         try {
-            const params = new URLSearchParams();
-            params.append('url', cleanUrl);
-            params.append('action', 'post');
+            const formData = new URLSearchParams();
+            formData.append('q', targetUrl);
+            formData.append('vt', 'instagram');
 
-            const snapRes = await axios.post('https://snapinsta.app/action2.php', params, {
+            const saveInstaRes = await axios.post('https://v3.fastdl.app/api/ajaxSearch', formData, {
                 headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                     'User-Agent': UA,
-                    'Origin': 'https://snapinsta.app',
-                    'Referer': 'https://snapinsta.app/'
+                    'Origin': 'https://saveinsta.app',
+                    'Referer': 'https://saveinsta.app/'
                 },
                 timeout: 10000
             });
 
-            if (snapRes.data) {
-                const htmlData = typeof snapRes.data === 'string' ? snapRes.data : JSON.stringify(snapRes.data);
-                const matchMp4 = htmlData.match(/href=\\"(https:\/\/[^"\\]+\.mp4[^"\\]*)\\"/i) ||
-                                 htmlData.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) ||
-                                 htmlData.match(/https:\/\/[^"\\]+cdninstagram\.com[^"\\]+/i);
+            if (saveInstaRes.data && saveInstaRes.data.data) {
+                const html = saveInstaRes.data.data;
+                const matchVideo = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || 
+                                   html.match(/href="(https:\/\/scontent[^"]+)"/i) ||
+                                   html.match(/href="(https:\/\/[^"]+download[^"]*)"/i);
 
-                if (matchMp4 && matchMp4[0]) {
-                    videoUrl = (matchMp4[1] || matchMp4[0]).replace(/\\/g, '').replace(/&amp;/g, '&');
-                    console.log('Instagram OK con Motor 1 (SnapInsta)');
+                if (matchVideo && matchVideo[1]) {
+                    videoUrl = matchVideo[1].replace(/&amp;/g, '&');
+                    console.log('Instagram OK con Motor 1 (SaveInsta)');
                 }
             }
         } catch (e) {
-            console.log('Falló Motor 1 SnapInsta:', e.message);
+            console.log('Falló Motor 1 SaveInsta:', e.message);
         }
 
-        // MOTOR 2: Cobalt API oficial (Payload v7)
+        // MOTOR 2: SnapInsta Form Action
         if (!videoUrl) {
             try {
-                const cobaltRes = await axios.post('https://co.wuk.sh/api/json', {
-                    url: cleanUrl
-                }, {
+                const params = new URLSearchParams();
+                params.append('url', targetUrl);
+                params.append('action', 'post');
+
+                const snapRes = await axios.post('https://snapinsta.app/action2.php', params, {
                     headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json',
-                        'User-Agent': UA
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': UA,
+                        'Origin': 'https://snapinsta.app',
+                        'Referer': 'https://snapinsta.app/'
                     },
                     timeout: 10000
                 });
 
-                if (cobaltRes.data && cobaltRes.data.url) {
-                    videoUrl = cobaltRes.data.url;
-                    console.log('Instagram OK con Motor 2 (Cobalt wuk.sh)');
+                if (snapRes.data) {
+                    const htmlData = typeof snapRes.data === 'string' ? snapRes.data : JSON.stringify(snapRes.data);
+                    const matchMp4 = htmlData.match(/href=\\"(https:\/\/[^"\\]+\.mp4[^"\\]*)\\"/i) ||
+                                     htmlData.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) ||
+                                     htmlData.match(/https:\/\/[^"\\]+cdninstagram\.com[^"\\]+/i);
+
+                    if (matchMp4 && matchMp4[0]) {
+                        videoUrl = (matchMp4[1] || matchMp4[0]).replace(/\\/g, '').replace(/&amp;/g, '&');
+                        console.log('Instagram OK con Motor 2 (SnapInsta)');
+                    }
                 }
             } catch (e) {
-                console.log('Falló Motor 2 Cobalt:', e.message);
+                console.log('Falló Motor 2 SnapInsta:', e.message);
             }
         }
 
-        // MOTOR 3: Embed Parser Alternativo
+        // MOTOR 3: Instagram Direct Embed HTML Parser
         if (!videoUrl) {
             try {
                 const embedRes = await axios.get(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                        'Accept-Language': 'en-US,en;q=0.9'
                     },
                     timeout: 10000
                 });
@@ -176,10 +189,10 @@ async function procesarInstagram(inputUrl, res) {
 
                 if (matchEmbed && matchEmbed[1]) {
                     videoUrl = matchEmbed[1].replace(/\\+\//g, '/').replace(/\\+u0026/g, '&').replace(/&amp;/g, '&');
-                    console.log('Instagram OK con Motor 3 (Embed)');
+                    console.log('Instagram OK con Motor 3 (Embed Parser)');
                 }
             } catch (e) {
-                console.log('Falló Motor 3 Embed:', e.message);
+                console.log('Falló Motor 3 Embed Parser:', e.message);
             }
         }
 
