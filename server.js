@@ -5,25 +5,7 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// ==========================================
-// 1. ROTACIÓN DE API KEYS (SPOTIFY)
-// ==========================================
-const API_KEYS = [
-    '557d5c69acmsh8683894f452d382p1001c0jsnc7f52c75f038',
-    'd57a57f0e6msh60d33aa70fd4bfap142a4ejsn3dd732d92d81',
-    'cfe9f96619msh2bf6f1ef96b6f5dp1ca3b8jsn55c76c99edbb',
-    'ff647c7411msh1f8a4b925654801p17bfa0jsn43708a13c350',
-    '662e02b486msh639f823b995cba3p1a1e83jsn3419c2db929d',
-    '9652174c07msh5a18f10e100709cp1f0e56jsna7079cb837cf'
-];
-
-let currentKeyIndex = 0;
-
-function getNextApiKey() {
-    const key = API_KEYS[currentKeyIndex];
-    currentKeyIndex = (currentKeyIndex + 1) % API_KEYS.length;
-    return key;
-}
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 app.use(cors());
 app.use(express.json());
@@ -34,9 +16,7 @@ async function desglosarUrl(shortUrl) {
     try {
         const response = await axios.get(shortUrl, {
             maxRedirects: 5,
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
+            headers: { 'User-Agent': UA }
         });
         return response.request.res.responseUrl || shortUrl;
     } catch (e) {
@@ -57,8 +37,8 @@ app.post('/api/descargar', async (req, res) => {
     try {
         url = url.trim();
 
-        if (plataforma === 'spotify') {
-            return await procesarSpotify(url, res);
+        if (plataforma === 'instagram') {
+            return await procesarInstagram(url, res);
         } else if (plataforma === 'tiktok') {
             return await procesarTikTok(url, res);
         } else if (plataforma === 'pinterest') {
@@ -86,13 +66,11 @@ app.get('/api/download-file', async (req, res) => {
     try {
         const response = await axios.get(fileUrl, {
             responseType: 'arraybuffer',
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
+            headers: { 'User-Agent': UA }
         });
 
         const contentType = response.headers['content-type'] || 'application/octet-stream';
-        
+
         if (!fileName.includes('.')) {
             if (contentType.includes('audio') || contentType.includes('mpeg')) {
                 fileName += '.mp3';
@@ -112,98 +90,95 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA SPOTIFY
+// 1. LÓGICA INSTAGRAM
 // ==========================================
-async function procesarSpotify(input, res) {
-    try {
-        const match = input.match(/track\/([a-zA-Z0-9]+)/);
-        if (!match) {
-            return res.status(400).json({ exito: false, mensaje: 'URL de Spotify no válida.' });
+// Busca recursivamente la primera URL de video en una respuesta JSON
+function buscarVideoEnJson(obj) {
+    if (!obj) return null;
+    if (typeof obj === 'string') {
+        return /^https?:\/\/.+(\.mp4|video)/i.test(obj) ? obj : null;
+    }
+    if (Array.isArray(obj)) {
+        for (const item of obj) {
+            const r = buscarVideoEnJson(item);
+            if (r) return r;
         }
-        const trackId = match[1];
-        const cleanUrl = `https://open.spotify.com/track/${trackId}`;
+        return null;
+    }
+    if (typeof obj === 'object') {
+        for (const key of ['video_url', 'videoUrl', 'download_url', 'downloadUrl', 'url']) {
+            if (typeof obj[key] === 'string' && /^https?:\/\//.test(obj[key])) return obj[key];
+        }
+        for (const key of Object.keys(obj)) {
+            const r = buscarVideoEnJson(obj[key]);
+            if (r) return r;
+        }
+    }
+    return null;
+}
 
-        let trackTitle = 'Canción de Spotify';
-        let artistName = '';
-        let coverImage = '';
+async function procesarInstagram(inputUrl, res) {
+    try {
+        const match = inputUrl.match(/instagram\.com\/(?:[^\/?#]+\/)?(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
+        if (!match) {
+            return res.status(400).json({ exito: false, mensaje: 'Enlace de Instagram no válido. Usa un enlace de reel o publicación.' });
+        }
 
+        const tipo = match[1].toLowerCase() === 'reels' ? 'reel' : match[1].toLowerCase();
+        const shortcode = match[2];
+        const timestamp = Date.now();
+        let videoUrl = null;
+
+        // --- OPCIÓN 1: página embed pública de Instagram (sin clave) ---
         try {
-            const oembedRes = await axios.get(`https://open.spotify.com/oembed?url=${encodeURIComponent(cleanUrl)}`);
-            if (oembedRes.data) {
-                trackTitle = oembedRes.data.title || trackTitle;
-                artistName = oembedRes.data.author_name || '';
-                coverImage = oembedRes.data.thumbnail_url || '';
+            const embedRes = await axios.get(`https://www.instagram.com/${tipo}/${shortcode}/embed/captioned/`, {
+                headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
+                timeout: 15000
+            });
+            const m = String(embedRes.data).match(/"video_url":"([^"]+)"/);
+            if (m && m[1]) {
+                videoUrl = JSON.parse(`"${m[1]}"`);
             }
         } catch (e) {
-            console.log('Error oembed:', e.message);
+            console.log('Falló embed de Instagram:', e.message);
         }
 
-        const titleCombined = artistName ? `${trackTitle} - ${artistName}` : trackTitle;
-
-        // MOTOR 1: Spotifydown API (Sin clave, directo y con bitrate correcto)
-        try {
-            const spotRes = await axios.get(`https://api.spotifydown.com/download/${trackId}`, {
-                headers: {
-                    'Origin': 'https://spotifydown.com',
-                    'Referer': 'https://spotifydown.com/',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                }
-            });
-
-            if (spotRes.data && spotRes.data.success && spotRes.data.link) {
-                const audioUrl = spotRes.data.link;
-                const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
-
-                return res.json({
-                    exito: true,
-                    titulo: spotRes.data.metadata?.title || titleCombined,
-                    coverUrl: spotRes.data.metadata?.cover || coverImage,
-                    audioUrl: directDownloadProxyUrl
-                });
-            }
-        } catch (err) {
-            console.log('Falló motor primario Spotifydown, intentando rotación de API Keys...');
-        }
-
-        // MOTOR 2: Rotación RapidAPI
-        for (let i = 0; i < API_KEYS.length; i++) {
-            const currentApiKey = getNextApiKey();
-
+        // --- OPCIÓN 2: API externa opcional (RapidAPI u otra) configurada por variables de entorno ---
+        // IG_API_URL debe contener {url}, ej: https://mi-api.p.rapidapi.com/download?url={url}
+        if (!videoUrl && process.env.IG_API_URL) {
             try {
-                const rapidRes = await axios.get(`https://spotify-downloader9.p.rapidapi.com/downloadSong?songId=${encodeURIComponent(cleanUrl)}`, {
-                    headers: {
-                        'x-rapidapi-key': currentApiKey,
-                        'x-rapidapi-host': 'spotify-downloader9.p.rapidapi.com'
-                    }
-                });
+                const headers = {};
+                if (process.env.IG_API_KEY) headers['x-rapidapi-key'] = process.env.IG_API_KEY;
+                if (process.env.IG_API_HOST) headers['x-rapidapi-host'] = process.env.IG_API_HOST;
 
-                if (rapidRes.data) {
-                    const audioUrl = rapidRes.data.data?.downloadLink || rapidRes.data.downloadLink || rapidRes.data.url;
-
-                    if (audioUrl) {
-                        const directDownloadProxyUrl = `/api/download-file?url=${encodeURIComponent(audioUrl)}&name=${encodeURIComponent(titleCombined)}.mp3`;
-
-                        return res.json({
-                            exito: true,
-                            titulo: titleCombined,
-                            coverUrl: coverImage || rapidRes.data.data?.cover,
-                            audioUrl: directDownloadProxyUrl
-                        });
-                    }
-                }
-            } catch (err) {
-                console.log(`Intento Spotify Key [${i + 1}] falló:`, err.message);
+                const apiUrl = process.env.IG_API_URL.replace('{url}', encodeURIComponent(inputUrl));
+                const apiRes = await axios.get(apiUrl, { headers, timeout: 20000 });
+                videoUrl = buscarVideoEnJson(apiRes.data);
+            } catch (e) {
+                console.log('Falló API externa de Instagram:', e.message);
             }
         }
 
-        return res.status(400).json({
-            exito: false,
-            mensaje: 'Hubo una demora al conectar. Vuelve a hacer clic en Descargar o coloca otro enlace. Si el mensaje persiste, significa que el límite diario de Spotify se ha alcanzado por hoy. Inténtalo de nuevo mañana.'
+        if (!videoUrl) {
+            return res.status(400).json({
+                exito: false,
+                mensaje: 'No se pudo obtener el video. Verifica que la publicación sea pública y que contenga un video.'
+            });
+        }
+
+        const fileName = `Instagram_Video_${timestamp}`;
+        const proxyUrl = `/api/download-file?url=${encodeURIComponent(videoUrl)}&name=${encodeURIComponent(fileName)}.mp4`;
+
+        return res.json({
+            exito: true,
+            videoUrlHD: proxyUrl,
+            videoUrl: proxyUrl,
+            titulo: 'Instagram Video'
         });
 
     } catch (e) {
-        console.error('Error procesando Spotify:', e.message);
-        return res.status(500).json({ exito: false, mensaje: 'Error al procesar Spotify.' });
+        console.error('Error procesando Instagram:', e.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar Instagram.' });
     }
 }
 
@@ -228,7 +203,7 @@ async function procesarTikTok(inputUrl, res) {
             const lovoRes = await axios.post('https://lovetik.com/api/ajax/search', paramsLovo, {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    'User-Agent': UA
                 }
             });
 
@@ -258,7 +233,7 @@ async function procesarTikTok(inputUrl, res) {
         const response = await axios.post('https://ssstik.io/abc?url=dl', params, {
             headers: {
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'User-Agent': UA,
                 'Origin': 'https://ssstik.io',
                 'Referer': 'https://ssstik.io/es'
             }
@@ -294,9 +269,7 @@ async function procesarTikTok(inputUrl, res) {
 async function procesarPinterest(inputUrl, res) {
     try {
         const response = await axios.get(inputUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
+            headers: { 'User-Agent': UA }
         });
 
         const html = response.data;
