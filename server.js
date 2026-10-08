@@ -90,14 +90,14 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA INSTAGRAM (ENFOQUE HÍBRIDO HASTA GRAPHQL)
+// 1. LÓGICA INSTAGRAM (CASCADA CON COMPATIBILIDAD STKN)
 // ==========================================
 async function procesarInstagram(inputUrl, res) {
     try {
         const timestamp = Date.now();
         let videoUrl = null;
 
-        // Decodificar URL y extraer shortcode exacto conservando guiones e identificadores especiales
+        // Decodificar URL para asegurar compatibilidad con ?stkn= y caracteres encoded
         const decodedUrl = decodeURIComponent(inputUrl.trim());
         const match = decodedUrl.match(/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
 
@@ -108,7 +108,7 @@ async function procesarInstagram(inputUrl, res) {
         const shortcode = match[1];
         const targetUrl = `https://www.instagram.com/reel/${shortcode}/`;
 
-        // MOTOR 1: FastDL Ajax Engine
+        // MOTOR 1: FastDL Engine
         try {
             const formData = new URLSearchParams();
             formData.append('q', targetUrl);
@@ -121,7 +121,7 @@ async function procesarInstagram(inputUrl, res) {
                     'Origin': 'https://fastdl.app',
                     'Referer': 'https://fastdl.app/'
                 },
-                timeout: 6000
+                timeout: 7000
             });
 
             if (fastRes.data && fastRes.data.data) {
@@ -138,7 +138,7 @@ async function procesarInstagram(inputUrl, res) {
             console.log('Falló Motor 1 FastDL:', e.message);
         }
 
-        // MOTOR 2: Direct IG GraphQL Query (Resistente a bloqueos de datacenter)
+        // MOTOR 2: Direct GraphQL Fallback
         if (!videoUrl) {
             try {
                 const gqlParams = new URLSearchParams();
@@ -151,22 +151,22 @@ async function procesarInstagram(inputUrl, res) {
                         'Content-Type': 'application/x-www-form-urlencoded',
                         'X-FB-Friendly-Name': 'PolarisPostQuery'
                     },
-                    timeout: 6000
+                    timeout: 7000
                 });
 
                 if (gqlRes.data && gqlRes.data.data && gqlRes.data.data.xdt_shortcode_media) {
                     const media = gqlRes.data.data.xdt_shortcode_media;
                     if (media.is_video && media.video_url) {
                         videoUrl = media.video_url;
-                        console.log('Instagram OK con Motor 2 (IG GraphQL Direct)');
+                        console.log('Instagram OK con Motor 2 (GraphQL Direct)');
                     }
                 }
             } catch (e) {
-                console.log('Falló Motor 2 IG GraphQL:', e.message);
+                console.log('Falló Motor 2 GraphQL:', e.message);
             }
         }
 
-        // MOTOR 3: Embed Native Query
+        // MOTOR 3: Embed Query
         if (!videoUrl) {
             try {
                 const embedRes = await axios.get(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, {
@@ -174,7 +174,7 @@ async function procesarInstagram(inputUrl, res) {
                         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
                         'Accept-Language': 'en-US,en;q=0.9'
                     },
-                    timeout: 6000
+                    timeout: 7000
                 });
 
                 const html = embedRes.data;
@@ -193,7 +193,7 @@ async function procesarInstagram(inputUrl, res) {
         if (!videoUrl) {
             return res.status(400).json({
                 exito: false,
-                mensaje: 'No se pudo obtener el video. Verifica que la publicación sea pública y vuelve a intentarlo.'
+                mensaje: 'No se pudo obtener el video. Si copiaste el enlace directamente, prueba usando Compartir > Copiar vínculo.'
             });
         }
 
