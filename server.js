@@ -117,6 +117,29 @@ function buscarVideoEnJson(obj) {
     return null;
 }
 
+// Extrae la URL del video desde HTML/JSON de Instagram, aunque venga con comillas y barras escapadas
+function extraerVideoInstagram(texto) {
+    const patrones = [
+        /\\*"video_url\\*"\s*:\s*\\*"(https:[^"]+?)\\*"/,
+        /\\*"video_versions\\*"\s*:\s*\[\s*\{[^}]*?\\*"url\\*"\s*:\s*\\*"(https:[^"]+?)\\*"/,
+        /<meta[^>]+property="og:video(?::secure_url)?"[^>]+content="([^"]+)"/i,
+        /<meta[^>]+content="([^"]+)"[^>]+property="og:video(?::secure_url)?"/i
+    ];
+
+    for (const patron of patrones) {
+        const m = texto.match(patron);
+        if (m && m[1]) {
+            const limpio = m[1]
+                .replace(/\\+\//g, '/')
+                .replace(/\\+u0026/g, '&')
+                .replace(/&amp;/g, '&')
+                .replace(/\\+$/, '');
+            if (/^https:\/\//.test(limpio)) return limpio;
+        }
+    }
+    return null;
+}
+
 async function procesarInstagram(inputUrl, res) {
     try {
         const match = inputUrl.match(/instagram\.com\/(?:[^\/?#]+\/)?(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
@@ -129,18 +152,68 @@ async function procesarInstagram(inputUrl, res) {
         const timestamp = Date.now();
         let videoUrl = null;
 
-        // --- OPCIÓN 1: página embed pública de Instagram (sin clave) ---
-        try {
-            const embedRes = await axios.get(`https://www.instagram.com/${tipo}/${shortcode}/embed/captioned/`, {
-                headers: { 'User-Agent': UA, 'Accept-Language': 'en-US,en;q=0.9' },
-                timeout: 15000
-            });
-            const m = String(embedRes.data).match(/"video_url":"([^"]+)"/);
-            if (m && m[1]) {
-                videoUrl = JSON.parse(`"${m[1]}"`);
+        // --- MÉTODOS SIN CLAVE, EN CASCADA ---
+        let bloqueado = false;
+        const navHeaders = {
+            'User-Agent': UA,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.instagram.com/'
+        };
+
+        const metodos = [
+            {
+                nombre: 'embed captioned',
+                fn: async () => {
+                    const r = await axios.get(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, { headers: navHeaders, timeout: 15000 });
+                    return extraerVideoInstagram(String(r.data));
+                }
+            },
+            {
+                nombre: 'embed simple',
+                fn: async () => {
+                    const r = await axios.get(`https://www.instagram.com/${tipo}/${shortcode}/embed/`, { headers: navHeaders, timeout: 15000 });
+                    return extraerVideoInstagram(String(r.data));
+                }
+            },
+            {
+                nombre: 'graphql',
+                fn: async () => {
+                    const r = await axios.get('https://www.instagram.com/graphql/query/', {
+                        params: { doc_id: '8845758582119845', variables: JSON.stringify({ shortcode }) },
+                        headers: { ...navHeaders, 'X-IG-App-ID': '936619743392459', 'X-Requested-With': 'XMLHttpRequest', 'Accept': '*/*' },
+                        timeout: 15000
+                    });
+                    const media = r.data && r.data.data && (r.data.data.xdt_shortcode_media || r.data.data.shortcode_media);
+                    return (media && media.video_url) || null;
+                }
+            },
+            {
+                nombre: 'og:video (crawler)',
+                fn: async () => {
+                    const r = await axios.get(`https://www.instagram.com/${tipo}/${shortcode}/`, {
+                        headers: { 'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)', 'Accept-Language': 'en-US,en;q=0.9' },
+                        timeout: 15000
+                    });
+                    return extraerVideoInstagram(String(r.data));
+                }
             }
-        } catch (e) {
-            console.log('Falló embed de Instagram:', e.message);
+        ];
+
+        for (const metodo of metodos) {
+            try {
+                const encontrado = await metodo.fn();
+                if (encontrado) {
+                    videoUrl = encontrado;
+                    console.log(`Instagram OK con método: ${metodo.nombre}`);
+                    break;
+                }
+                console.log(`Instagram: ${metodo.nombre} respondió pero sin video.`);
+            } catch (e) {
+                const status = e.response ? e.response.status : 'sin respuesta';
+                if ([401, 403, 429].includes(e.response && e.response.status)) bloqueado = true;
+                console.log(`Falló Instagram (${metodo.nombre}): ${status} - ${e.message}`);
+            }
         }
 
         // --- OPCIÓN 2: API externa opcional (RapidAPI u otra) configurada por variables de entorno ---
@@ -162,7 +235,9 @@ async function procesarInstagram(inputUrl, res) {
         if (!videoUrl) {
             return res.status(400).json({
                 exito: false,
-                mensaje: 'No se pudo obtener el video. Verifica que la publicación sea pública y que contenga un video.'
+                mensaje: bloqueado
+                    ? 'Instagram está bloqueando temporalmente la conexión del servidor. Inténtalo de nuevo en unos minutos.'
+                    : 'No se pudo obtener el video. Verifica que la publicación sea pública y que contenga un video.'
             });
         }
 
