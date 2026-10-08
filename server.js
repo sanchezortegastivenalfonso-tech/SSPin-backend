@@ -90,14 +90,14 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA INSTAGRAM (SISTEMA DE MOTORES REPARADO)
+// 1. LÓGICA INSTAGRAM (DEFINITIVA CON SNAPINSTA/COBALT)
 // ==========================================
 async function procesarInstagram(inputUrl, res) {
     try {
         const timestamp = Date.now();
         let videoUrl = null;
 
-        // Extraer la ID única del Reel/Publicación (ej: Dcr4deKx9n6)
+        // Limpieza de URL
         const match = inputUrl.match(/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
         if (!match || !match[1]) {
             return res.status(400).json({ exito: false, mensaje: 'Enlace de Instagram no válido.' });
@@ -106,83 +106,80 @@ async function procesarInstagram(inputUrl, res) {
         const shortcode = match[1];
         const cleanUrl = `https://www.instagram.com/reel/${shortcode}/`;
 
-        // MOTOR 1: Instagram GraphQL Endpoint Directo con App ID Oficial
+        // MOTOR 1: SnapInsta Action API
         try {
-            const gqlRes = await axios.get('https://www.instagram.com/api/v1/media/by/shortcode/', {
-                params: { shortcode },
+            const params = new URLSearchParams();
+            params.append('url', cleanUrl);
+            params.append('action', 'post');
+
+            const snapRes = await axios.post('https://snapinsta.app/action2.php', params, {
                 headers: {
-                    'User-Agent': 'Instagram 275.0.0.27.98 Android (33/13; 420dpi; 1080x2400; Xiaomi; M2101K6G; sweet; qcom; en_US; 458229258)',
-                    'X-IG-App-ID': '936619743392459',
-                    'Accept': '*/*'
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': UA,
+                    'Origin': 'https://snapinsta.app',
+                    'Referer': 'https://snapinsta.app/'
                 },
-                timeout: 8000
+                timeout: 10000
             });
 
-            if (gqlRes.data && gqlRes.data.items && gqlRes.data.items[0]) {
-                const item = gqlRes.data.items[0];
-                if (item.video_versions && item.video_versions.length > 0) {
-                    videoUrl = item.video_versions[0].url;
-                    console.log('Instagram OK con Motor 1 (GraphQL App API)');
+            if (snapRes.data) {
+                const htmlData = typeof snapRes.data === 'string' ? snapRes.data : JSON.stringify(snapRes.data);
+                const matchMp4 = htmlData.match(/href=\\"(https:\/\/[^"\\]+\.mp4[^"\\]*)\\"/i) ||
+                                 htmlData.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) ||
+                                 htmlData.match(/https:\/\/[^"\\]+cdninstagram\.com[^"\\]+/i);
+
+                if (matchMp4 && matchMp4[0]) {
+                    videoUrl = (matchMp4[1] || matchMp4[0]).replace(/\\/g, '').replace(/&amp;/g, '&');
+                    console.log('Instagram OK con Motor 1 (SnapInsta)');
                 }
             }
         } catch (e) {
-            console.log('Falló Motor 1 GraphQL App API:', e.message);
+            console.log('Falló Motor 1 SnapInsta:', e.message);
         }
 
-        // MOTOR 2: FastSave / Instavideos Public API
+        // MOTOR 2: Cobalt API oficial (Payload v7)
         if (!videoUrl) {
             try {
-                const apiRes = await axios.post('https://instavideosave.net/api/instagram', {
+                const cobaltRes = await axios.post('https://co.wuk.sh/api/json', {
                     url: cleanUrl
                 }, {
                     headers: {
+                        'Accept': 'application/json',
                         'Content-Type': 'application/json',
-                        'User-Agent': UA,
-                        'Origin': 'https://instavideosave.net',
-                        'Referer': 'https://instavideosave.net/'
+                        'User-Agent': UA
                     },
-                    timeout: 8000
+                    timeout: 10000
                 });
 
-                if (apiRes.data && apiRes.data.url) {
-                    videoUrl = apiRes.data.url;
-                    console.log('Instagram OK con Motor 2 (InstaVideoSave)');
-                } else if (apiRes.data && apiRes.data.media && apiRes.data.media.length > 0) {
-                    videoUrl = apiRes.data.media[0].url;
-                    console.log('Instagram OK con Motor 2 (InstaVideoSave Array)');
+                if (cobaltRes.data && cobaltRes.data.url) {
+                    videoUrl = cobaltRes.data.url;
+                    console.log('Instagram OK con Motor 2 (Cobalt wuk.sh)');
                 }
             } catch (e) {
-                console.log('Falló Motor 2 InstaVideoSave:', e.message);
+                console.log('Falló Motor 2 Cobalt:', e.message);
             }
         }
 
-        // MOTOR 3: Rapid/Public Proxy Downloader
+        // MOTOR 3: Embed Parser Alternativo
         if (!videoUrl) {
             try {
-                const params = new URLSearchParams();
-                params.append('q', cleanUrl);
-                params.append('vt', 'instagram');
-
-                const proxyRes = await axios.post('https://v3.fastdl.app/api/ajaxSearch', params, {
+                const embedRes = await axios.get(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, {
                     headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                        'User-Agent': UA,
-                        'X-Requested-With': 'XMLHttpRequest'
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
                     },
-                    timeout: 8000
+                    timeout: 10000
                 });
 
-                if (proxyRes.data && proxyRes.data.data) {
-                    const html = proxyRes.data.data;
-                    const matchMp4 = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) ||
-                                     html.match(/href="(https:\/\/[^"]+download[^"]*)"/i);
-                    if (matchMp4 && matchMp4[1]) {
-                        videoUrl = matchMp4[1].replace(/&amp;/g, '&');
-                        console.log('Instagram OK con Motor 3 (FastDL Proxy)');
-                    }
+                const html = embedRes.data;
+                const matchEmbed = html.match(/\\*"video_url\\*"\s*:\s*\\*"(https:[^"]+?)\\*"/i) ||
+                                   html.match(/<meta[^>]+property="og:video"[^>]+content="([^"]+)"/i);
+
+                if (matchEmbed && matchEmbed[1]) {
+                    videoUrl = matchEmbed[1].replace(/\\+\//g, '/').replace(/\\+u0026/g, '&').replace(/&amp;/g, '&');
+                    console.log('Instagram OK con Motor 3 (Embed)');
                 }
             } catch (e) {
-                console.log('Falló Motor 3 FastDL Proxy:', e.message);
+                console.log('Falló Motor 3 Embed:', e.message);
             }
         }
 
