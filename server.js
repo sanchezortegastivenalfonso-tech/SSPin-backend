@@ -90,100 +90,96 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA INSTAGRAM (ESTABLE CON SNAPSAVE/GRAPHQL)
+// 1. LÓGICA INSTAGRAM (SOLUCIÓN DEFINITIVA)
 // ==========================================
 async function procesarInstagram(inputUrl, res) {
     try {
         const timestamp = Date.now();
         let videoUrl = null;
 
-        const cleanUrl = inputUrl.split('?')[0].replace(/\/+$/, '');
-        const match = cleanUrl.match(/instagram\.com\/(?:[^\/?#]+\/)?(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
-
-        if (!match) {
-            return res.status(400).json({ exito: false, mensaje: 'Enlace de Instagram no válido. Usa un enlace de reel o publicación.' });
+        // Extraer limpia la ID del Reel o Publicación (ej: Dcr4deKx9n6)
+        const match = inputUrl.match(/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
+        if (!match || !match[1]) {
+            return res.status(400).json({ exito: false, mensaje: 'Enlace de Instagram no válido.' });
         }
 
-        const shortcode = match[2];
+        const shortcode = match[1];
+        const cleanUrl = `https://www.instagram.com/reel/${shortcode}/`;
 
-        // MOTOR 1: SnapSave API
+        // MOTOR 1: SaveFrom API Directa (No usa IP de Render, pasa por balanceador público)
         try {
-            const params = new URLSearchParams();
-            params.append('url', cleanUrl);
-
-            const snapRes = await axios.post('https://snapsave.app/action.php', params, {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': UA,
-                    'Origin': 'https://snapsave.app',
-                    'Referer': 'https://snapsave.app/'
-                },
-                timeout: 10000
-            });
-
-            if (snapRes.data) {
-                const html = String(snapRes.data);
-                const matchUrl = html.match(/href=\\"(https:\/\/[^"\\]+\.mp4[^"\\]*)\\"/i) ||
-                                 html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) ||
-                                 html.match(/https:\/\/[^"\\]+cdninstagram\.com[^"\\]+/i);
-
-                if (matchUrl && matchUrl[0]) {
-                    videoUrl = (matchUrl[1] || matchUrl[0]).replace(/\\/g, '').replace(/&amp;/g, '&');
-                    console.log('Instagram OK con Motor 1 (SnapSave)');
+            const sfRes = await axios.post('https://worker.sf-tools.com/savefrom.php', 
+                new URLSearchParams({ url: cleanUrl }), 
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': UA,
+                        'Origin': 'https://en.savefrom.net',
+                        'Referer': 'https://en.savefrom.net/'
+                    },
+                    timeout: 8000
                 }
+            );
+
+            const htmlData = typeof sfRes.data === 'string' ? sfRes.data : JSON.stringify(sfRes.data);
+            const matchMp4 = htmlData.match(/https:\/\/[^"\\]+cdninstagram\.com[^"\\]+\.mp4[^"\\]*/i) ||
+                             htmlData.match(/https:\/\/[^"\\]+\.mp4[^"\\]*/i);
+
+            if (matchMp4 && matchMp4[0]) {
+                videoUrl = matchMp4[0].replace(/\\/g, '').replace(/&amp;/g, '&');
+                console.log('Instagram OK con Motor 1 (SaveFrom)');
             }
         } catch (e) {
-            console.log('Falló Motor 1 SnapSave:', e.message);
+            console.log('Falló Motor 1 SaveFrom:', e.message);
         }
 
-        // MOTOR 2: Instagram GraphQL Query Directo
+        // MOTOR 2: Publer Direct Endpoint
         if (!videoUrl) {
             try {
-                const gqlRes = await axios.get('https://www.instagram.com/graphql/query/', {
-                    params: {
-                        doc_id: '8845758582119845',
-                        variables: JSON.stringify({ shortcode })
-                    },
+                const publerRes = await axios.post('https://publer.io/api/v1/job_status/media_downloader', {
+                    url: cleanUrl,
+                    iphone: false
+                }, {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-                        'X-IG-App-ID': '936619743392459',
-                        'X-Requested-With': 'XMLHttpRequest',
-                        'Accept': '*/*'
+                        'Content-Type': 'application/json',
+                        'User-Agent': UA,
+                        'Origin': 'https://publer.io',
+                        'Referer': 'https://publer.io/'
                     },
-                    timeout: 10000
+                    timeout: 8000
                 });
 
-                const media = gqlRes.data && gqlRes.data.data && (gqlRes.data.data.xdt_shortcode_media || gqlRes.data.data.shortcode_media);
-                if (media && media.video_url) {
-                    videoUrl = media.video_url;
-                    console.log('Instagram OK con Motor 2 (GraphQL Directo)');
+                if (publerRes.data && publerRes.data.payload && publerRes.data.payload.length > 0) {
+                    videoUrl = publerRes.data.payload[0].path;
+                    console.log('Instagram OK con Motor 2 (Publer)');
                 }
             } catch (e) {
-                console.log('Falló Motor 2 GraphQL:', e.message);
+                console.log('Falló Motor 2 Publer:', e.message);
             }
         }
 
-        // MOTOR 3: Instagram Embed API (Fallback)
+        // MOTOR 3: Instagram Oembed Embed Data
         if (!videoUrl) {
             try {
-                const embedRes = await axios.get(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, {
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                        'Accept-Language': 'en-US,en;q=0.9'
-                    },
-                    timeout: 10000
+                const oembedRes = await axios.get(`https://api.instagram.com/oembed/?url=${encodeURIComponent(cleanUrl)}`, {
+                    headers: { 'User-Agent': UA },
+                    timeout: 8000
                 });
 
-                const html = embedRes.data;
-                const matchEmbed = html.match(/\\*"video_url\\*"\s*:\s*\\*"(https:[^"]+?)\\*"/i) ||
-                                   html.match(/<meta[^>]+property="og:video"[^>]+content="([^"]+)"/i);
-
-                if (matchEmbed && matchEmbed[1]) {
-                    videoUrl = matchEmbed[1].replace(/\\+\//g, '/').replace(/\\+u0026/g, '&').replace(/&amp;/g, '&');
-                    console.log('Instagram OK con Motor 3 (Embed)');
+                if (oembedRes.data && oembedRes.data.html) {
+                    const embedHtml = oembedRes.data.html;
+                    const matchIframe = embedHtml.match(/src="([^"]+)"/i);
+                    if (matchIframe && matchIframe[1]) {
+                        const pageRes = await axios.get(matchIframe[1], { headers: { 'User-Agent': UA } });
+                        const matchVideo = pageRes.data.match(/\\*"video_url\\*"\s*:\s*\\*"(https:[^"]+?)\\*"/i);
+                        if (matchVideo && matchVideo[1]) {
+                            videoUrl = matchVideo[1].replace(/\\+\//g, '/').replace(/\\+u0026/g, '&').replace(/&amp;/g, '&');
+                            console.log('Instagram OK con Motor 3 (Oembed)');
+                        }
+                    }
                 }
             } catch (e) {
-                console.log('Falló Motor 3 Embed:', e.message);
+                console.log('Falló Motor 3 Oembed:', e.message);
             }
         }
 
