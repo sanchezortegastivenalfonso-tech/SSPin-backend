@@ -90,160 +90,105 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA INSTAGRAM (OPTIMIZADA)
+// 1. LÓGICA INSTAGRAM (REFORZADA CON MOTORES PÚBLICOS)
 // ==========================================
-function buscarVideoEnJson(obj) {
-    if (!obj) return null;
-    if (typeof obj === 'string') {
-        return /^https?:\/\/.+(\.mp4|video)/i.test(obj) ? obj : null;
-    }
-    if (Array.isArray(obj)) {
-        for (const item of obj) {
-            const r = buscarVideoEnJson(item);
-            if (r) return r;
-        }
-        return null;
-    }
-    if (typeof obj === 'object') {
-        for (const key of ['video_url', 'videoUrl', 'download_url', 'downloadUrl', 'url']) {
-            if (typeof obj[key] === 'string' && /^https?:\/\//.test(obj[key])) return obj[key];
-        }
-        for (const key of Object.keys(obj)) {
-            const r = buscarVideoEnJson(obj[key]);
-            if (r) return r;
-        }
-    }
-    return null;
-}
-
-function extraerVideoInstagram(texto) {
-    const patrones = [
-        /\\*"video_url\\*"\s*:\s*\\*"(https:[^"]+?)\\*"/,
-        /\\*"video_versions\\*"\s*:\s*\[\s*\{[^}]*?\\*"url\\*"\s*:\s*\\*"(https:[^"]+?)\\*"/,
-        /<meta[^>]+property="og:video(?::secure_url)?"[^>]+content="([^"]+)"/i,
-        /<meta[^>]+content="([^"]+)"[^>]+property="og:video(?::secure_url)?"/i
-    ];
-
-    for (const patron of patrones) {
-        const m = texto.match(patron);
-        if (m && m[1]) {
-            const limpio = m[1]
-                .replace(/\\+\//g, '/')
-                .replace(/\\+u0026/g, '&')
-                .replace(/&amp;/g, '&')
-                .replace(/\\+$/, '');
-            if (/^https:\/\//.test(limpio)) return limpio;
-        }
-    }
-    return null;
-}
-
 async function procesarInstagram(inputUrl, res) {
     try {
         const timestamp = Date.now();
         let videoUrl = null;
 
-        // MOTOR 1: Cobalt Tools API (Rápido y omite bloqueos de IP)
+        // Limpiar URL eliminando parámetros basura de rastreo (?igsh=...)
+        const cleanUrl = inputUrl.split('?')[0];
+
+        // MOTOR 1: FastDL Endpoint Directo
         try {
-            const cobaltRes = await axios.post('https://api.cobalt.tools/api/json', {
-                url: inputUrl,
-                videoQuality: '720'
-            }, {
+            const params = new URLSearchParams();
+            params.append('q', cleanUrl);
+            params.append('t', 'media');
+            params.append('lang', 'en');
+
+            const apiRes = await axios.post('https://v3.fastdl.app/api/ajaxSearch', params, {
                 headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json',
-                    'User-Agent': UA
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': UA,
+                    'Origin': 'https://fastdl.app',
+                    'Referer': 'https://fastdl.app/'
                 },
                 timeout: 10000
             });
 
-            if (cobaltRes.data && cobaltRes.data.url) {
-                videoUrl = cobaltRes.data.url;
-                console.log('Instagram OK con motor Cobalt');
+            if (apiRes.data && apiRes.data.data) {
+                const html = apiRes.data.data;
+                const match = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || 
+                              html.match(/href="(https:\/\/scontent[^"]+)"/i) ||
+                              html.match(/href="(https:\/\/[^"]+download[^"]*)"/i);
+                if (match && match[1]) {
+                    videoUrl = match[1].replace(/&amp;/g, '&');
+                    console.log('Instagram OK con Motor FastDL');
+                }
             }
         } catch (e) {
-            console.log('Falló motor Cobalt para Instagram, probando métodos secundarios...');
+            console.log('Falló Motor 1 FastDL para Instagram:', e.message);
         }
 
-        // MOTOR 2: Scrapers directos de Instagram (Fallback)
+        // MOTOR 2: SnapInsta Action API (Fallback)
         if (!videoUrl) {
-            const match = inputUrl.match(/instagram\.com\/(?:[^\/?#]+\/)?(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
-            if (!match) {
-                return res.status(400).json({ exito: false, mensaje: 'Enlace de Instagram no válido. Usa un enlace de reel o publicación.' });
-            }
+            try {
+                const params = new URLSearchParams();
+                params.append('url', cleanUrl);
+                params.append('action', 'post');
 
-            const tipo = match[1].toLowerCase() === 'reels' ? 'reel' : match[1].toLowerCase();
-            const shortcode = match[2];
+                const snapRes = await axios.post('https://snapinsta.app/action2.php', params, {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': UA,
+                        'Origin': 'https://snapinsta.app',
+                        'Referer': 'https://snapinsta.app/'
+                    },
+                    timeout: 10000
+                });
 
-            const navHeaders = {
-                'User-Agent': UA,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.instagram.com/'
-            };
-
-            const metodos = [
-                {
-                    nombre: 'embed captioned',
-                    fn: async () => {
-                        const r = await axios.get(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, { headers: navHeaders, timeout: 10000 });
-                        return extraerVideoInstagram(String(r.data));
-                    }
-                },
-                {
-                    nombre: 'embed simple',
-                    fn: async () => {
-                        const r = await axios.get(`https://www.instagram.com/${tipo}/${shortcode}/embed/`, { headers: navHeaders, timeout: 10000 });
-                        return extraerVideoInstagram(String(r.data));
-                    }
-                },
-                {
-                    nombre: 'graphql',
-                    fn: async () => {
-                        const r = await axios.get('https://www.instagram.com/graphql/query/', {
-                            params: { doc_id: '8845758582119845', variables: JSON.stringify({ shortcode }) },
-                            headers: { ...navHeaders, 'X-IG-App-ID': '936619743392459', 'X-Requested-With': 'XMLHttpRequest', 'Accept': '*/*' },
-                            timeout: 10000
-                        });
-                        const media = r.data && r.data.data && (r.data.data.xdt_shortcode_media || r.data.data.shortcode_media);
-                        return (media && media.video_url) || null;
+                if (snapRes.data) {
+                    const html = snapRes.data;
+                    const match = html.match(/href="(https:\/\/[^"]+\.mp4[^"]*)"/i) || html.match(/href="(https:\/\/[^"]+download[^"]*)"/i);
+                    if (match && match[1]) {
+                        videoUrl = match[1].replace(/&amp;/g, '&');
+                        console.log('Instagram OK con Motor SnapInsta');
                     }
                 }
-            ];
-
-            for (const metodo of metodos) {
-                try {
-                    const encontrado = await metodo.fn();
-                    if (encontrado) {
-                        videoUrl = encontrado;
-                        console.log(`Instagram OK con método: ${metodo.nombre}`);
-                        break;
-                    }
-                } catch (e) {
-                    console.log(`Falló Instagram (${metodo.nombre}): ${e.message}`);
-                }
+            } catch (e) {
+                console.log('Falló Motor 2 SnapInsta para Instagram:', e.message);
             }
         }
 
-        // MOTOR 3: API externa opcional si tienes configurada una variable de entorno
-        if (!videoUrl && process.env.IG_API_URL) {
+        // MOTOR 3: Cobalt (Fallback de reserva)
+        if (!videoUrl) {
             try {
-                const headers = {};
-                if (process.env.IG_API_KEY) headers['x-rapidapi-key'] = process.env.IG_API_KEY;
-                if (process.env.IG_API_HOST) headers['x-rapidapi-host'] = process.env.IG_API_HOST;
+                const cobaltRes = await axios.post('https://api.cobalt.tools/api/json', {
+                    url: cleanUrl,
+                    videoQuality: '720'
+                }, {
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                        'User-Agent': UA
+                    },
+                    timeout: 10000
+                });
 
-                const apiUrl = process.env.IG_API_URL.replace('{url}', encodeURIComponent(inputUrl));
-                const apiRes = await axios.get(apiUrl, { headers, timeout: 15000 });
-                videoUrl = buscarVideoEnJson(apiRes.data);
+                if (cobaltRes.data && cobaltRes.data.url) {
+                    videoUrl = cobaltRes.data.url;
+                    console.log('Instagram OK con Motor Cobalt');
+                }
             } catch (e) {
-                console.log('Falló API externa de Instagram:', e.message);
+                console.log('Falló Motor 3 Cobalt para Instagram:', e.message);
             }
         }
 
         if (!videoUrl) {
             return res.status(400).json({
                 exito: false,
-                mensaje: 'No se pudo obtener el video. Verifica que la publicación sea pública y vuelva a intentarlo.'
+                mensaje: 'No se pudo obtener el video. Verifica que la publicación sea pública y vuelve a intentarlo.'
             });
         }
 
