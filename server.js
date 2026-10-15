@@ -16,7 +16,8 @@ async function desglosarUrl(shortUrl) {
     try {
         const response = await axios.get(shortUrl, {
             maxRedirects: 5,
-            headers: { 'User-Agent': UA }
+            headers: { 'User-Agent': UA },
+            timeout: 4000
         });
         return response.request.res.responseUrl || shortUrl;
     } catch (e) {
@@ -90,14 +91,13 @@ app.get('/api/download-file', async (req, res) => {
 });
 
 // ==========================================
-// 1. LÓGICA INSTAGRAM (CASCADA CON COMPATIBILIDAD STKN)
+// 1. LÓGICA INSTAGRAM (INTACTA)
 // ==========================================
 async function procesarInstagram(inputUrl, res) {
     try {
         const timestamp = Date.now();
         let videoUrl = null;
 
-        // Decodificar URL para asegurar compatibilidad con ?stkn= y caracteres encoded
         const decodedUrl = decodeURIComponent(inputUrl.trim());
         const match = decodedUrl.match(/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i);
 
@@ -131,12 +131,9 @@ async function procesarInstagram(inputUrl, res) {
 
                 if (matchVideo && matchVideo[1]) {
                     videoUrl = matchVideo[1].replace(/&amp;/g, '&');
-                    console.log('Instagram OK con Motor 1 (FastDL)');
                 }
             }
-        } catch (e) {
-            console.log('Falló Motor 1 FastDL:', e.message);
-        }
+        } catch (e) {}
 
         // MOTOR 2: Direct GraphQL Fallback
         if (!videoUrl) {
@@ -158,12 +155,9 @@ async function procesarInstagram(inputUrl, res) {
                     const media = gqlRes.data.data.xdt_shortcode_media;
                     if (media.is_video && media.video_url) {
                         videoUrl = media.video_url;
-                        console.log('Instagram OK con Motor 2 (GraphQL Direct)');
                     }
                 }
-            } catch (e) {
-                console.log('Falló Motor 2 GraphQL:', e.message);
-            }
+            } catch (e) {}
         }
 
         // MOTOR 3: Embed Query
@@ -183,11 +177,8 @@ async function procesarInstagram(inputUrl, res) {
 
                 if (matchEmbed && matchEmbed[1]) {
                     videoUrl = matchEmbed[1].replace(/\\+\//g, '/').replace(/\\+u0026/g, '&').replace(/&amp;/g, '&');
-                    console.log('Instagram OK con Motor 3 (Embed)');
                 }
-            } catch (e) {
-                console.log('Falló Motor 3 Embed:', e.message);
-            }
+            } catch (e) {}
         }
 
         if (!videoUrl) {
@@ -208,13 +199,12 @@ async function procesarInstagram(inputUrl, res) {
         });
 
     } catch (e) {
-        console.error('Error procesando Instagram:', e.message);
         return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar Instagram.' });
     }
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK (MULTI-API EN CASCADA CON DESGLOSE DE URL)
+// 2. LÓGICA TIKTOK OPTIMIZADA (MÁS RÁPIDA)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
@@ -226,22 +216,18 @@ async function procesarTikTok(inputUrl, res) {
 
         const timestamp = Date.now();
 
-        // --- OPCIÓN 1: API Lovetik ---
+        // OPCIÓN 1: TikWM API Directa (Mucho más rápida y ligera que SSSTik o Lovetik)
         try {
-            const paramsLovo = new URLSearchParams();
-            paramsLovo.append('query', cleanUrl);
-
-            const lovoRes = await axios.post('https://lovetik.com/api/ajax/search', paramsLovo, {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                    'User-Agent': UA
-                }
+            const tikWmRes = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}`, {
+                headers: { 'User-Agent': UA },
+                timeout: 5000
             });
 
-            if (lovoRes.data && lovoRes.data.links && lovoRes.data.links.length > 0) {
-                const directUrl = lovoRes.data.links[0].a;
-                const title = lovoRes.data.desc || `TikTok_Video_${timestamp}`;
-                const fileName = `${title}_${timestamp}`;
+            if (tikWmRes.data && tikWmRes.data.code === 0 && tikWmRes.data.data) {
+                const videoData = tikWmRes.data.data;
+                const directUrl = videoData.hdplay || videoData.play;
+                const title = videoData.title || `TikTok_Video_${timestamp}`;
+                const fileName = `${title.substring(0, 30)}_${timestamp}`;
                 const proxyUrl = `/api/download-file?url=${encodeURIComponent(directUrl)}&name=${encodeURIComponent(fileName)}.mp4`;
 
                 return res.json({
@@ -252,10 +238,10 @@ async function procesarTikTok(inputUrl, res) {
                 });
             }
         } catch (e) {
-            console.log('Falló Lovetik, intentando con SSSTik...');
+            console.log('Falló TikWM rápido, pasando a respaldo...');
         }
 
-        // --- OPCIÓN 2: SSSTik ---
+        // OPCIÓN 2: SSSTik (Respaldo con timeout estricto)
         const params = new URLSearchParams();
         params.append('id', cleanUrl);
         params.append('locale', 'es');
@@ -267,7 +253,8 @@ async function procesarTikTok(inputUrl, res) {
                 'User-Agent': UA,
                 'Origin': 'https://ssstik.io',
                 'Referer': 'https://ssstik.io/es'
-            }
+            },
+            timeout: 5000
         });
 
         const html = response.data;
@@ -295,7 +282,7 @@ async function procesarTikTok(inputUrl, res) {
 }
 
 // ==========================================
-// 3. LÓGICA PINTEREST
+// 3. LÓGICA PINTEREST (INTACTA)
 // ==========================================
 async function procesarPinterest(inputUrl, res) {
     try {
@@ -327,7 +314,6 @@ async function procesarPinterest(inputUrl, res) {
 
         return res.status(400).json({ exito: false, mensaje: 'Este Pin no contiene un video válido.' });
     } catch (err) {
-        console.error('Error Pinterest:', err.message);
         return res.status(500).json({ exito: false, mensaje: 'Error interno en Pinterest.' });
     }
 }
