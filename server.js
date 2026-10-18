@@ -11,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Función para expandir enlaces acortados (vt.tiktok.com)
+// Función para expandir enlaces acortados (vt.tiktok.com, pin.it, etc.)
 async function desglosarUrl(shortUrl) {
     try {
         const response = await axios.get(shortUrl, {
@@ -54,7 +54,7 @@ app.post('/api/descargar', async (req, res) => {
 });
 
 // ==========================================
-// PROXY DE DESCARGA DIRECTA
+// PROXY DE DESCARGA DIRECTA (INTACTO)
 // ==========================================
 app.get('/api/download-file', async (req, res) => {
     const fileUrl = req.query.url;
@@ -204,7 +204,7 @@ async function procesarInstagram(inputUrl, res) {
 }
 
 // ==========================================
-// 2. LÓGICA TIKTOK OPTIMIZADA (MÁS RÁPIDA)
+// 2. LÓGICA TIKTOK OPTIMIZADA (INTACTA)
 // ==========================================
 async function procesarTikTok(inputUrl, res) {
     try {
@@ -216,7 +216,7 @@ async function procesarTikTok(inputUrl, res) {
 
         const timestamp = Date.now();
 
-        // OPCIÓN 1: TikWM API Directa (Mucho más rápida y ligera que SSSTik o Lovetik)
+        // OPCIÓN 1: TikWM API Directa
         try {
             const tikWmRes = await axios.get(`https://www.tikwm.com/api/?url=${encodeURIComponent(cleanUrl)}`, {
                 headers: { 'User-Agent': UA },
@@ -241,7 +241,7 @@ async function procesarTikTok(inputUrl, res) {
             console.log('Falló TikWM rápido, pasando a respaldo...');
         }
 
-        // OPCIÓN 2: SSSTik (Respaldo con timeout estricto)
+        // OPCIÓN 2: SSSTik (Respaldo)
         const params = new URLSearchParams();
         params.append('id', cleanUrl);
         params.append('locale', 'es');
@@ -282,23 +282,57 @@ async function procesarTikTok(inputUrl, res) {
 }
 
 // ==========================================
-// 3. LÓGICA PINTEREST (INTACTA)
+// 3. LÓGICA PINTEREST (CORREGIDA)
 // ==========================================
 async function procesarPinterest(inputUrl, res) {
     try {
-        const response = await axios.get(inputUrl, {
+        let targetUrl = inputUrl.trim();
+
+        if (targetUrl.includes('pin.it')) {
+            targetUrl = await desglosarUrl(targetUrl);
+        }
+
+        const response = await axios.get(targetUrl, {
             headers: { 'User-Agent': UA }
         });
 
         const html = response.data;
+        let rawVideoUrl = null;
 
-        const videoMatch = html.match(/https:\/\/[^"]+\.mp4/gi) || 
-                           html.match(/"video_list":\{"V_720P":\{"url":"(https?:\/\/[^"]+)"/i) ||
-                           html.match(/"url":"(https:\/\/v1\.pinimg\.com\/videos\/[^\"]+)"/i);
+        // Búsqueda en objeto JSON embebido de la página
+        const matchJson = html.match(/<script id="__PGI_APP_STATE__" type="application\/json">([\s\S]*?)<\/script>/i) ||
+                          html.match(/<script id="initial-state" type="application\/json">([\s\S]*?)<\/script>/i);
 
-        if (videoMatch && videoMatch[0]) {
-            let rawVideoUrl = videoMatch[0].replace(/\\/g, '');
-            if (videoMatch[1]) rawVideoUrl = videoMatch[1].replace(/\\/g, '');
+        if (matchJson && matchJson[1]) {
+            try {
+                const data = JSON.parse(matchJson[1]);
+                const resources = data.resources || data.v7 || {};
+                
+                // Recorremos el estado buscando URLs de video mp4
+                const jsonStr = JSON.stringify(resources);
+                const mp4Matches = jsonStr.match(/https?:\/\/[^"]+?\.mp4/gi);
+                if (mp4Matches && mp4Matches.length > 0) {
+                    // Tomamos el enlace mp4 de mayor resolución si hay varios
+                    rawVideoUrl = mp4Matches.find(url => url.includes('720p') || url.includes('exp')) || mp4Matches[0];
+                }
+            } catch (e) {}
+        }
+
+        // Búsqueda por Expresión Regular directa si no se halló en JSON
+        if (!rawVideoUrl) {
+            const videoMatch = html.match(/"V_720P":\s*\{\s*"url":\s*"([^"]+)"/i) ||
+                               html.match(/"V_EXP720P":\s*\{\s*"url":\s*"([^"]+)"/i) ||
+                               html.match(/"url":\s*"(https:\/\/v1\.pinimg\.com\/videos\/[^\"]+\.mp4)"/i) ||
+                               html.match(/(https:\/\/v1\.pinimg\.com\/videos\/[^\s"]+\.mp4)/gi);
+
+            if (videoMatch) {
+                rawVideoUrl = videoMatch[1] || videoMatch[0];
+            }
+        }
+
+        if (rawVideoUrl) {
+            // Limpiar secuencias de escape de formato JSON o URLs
+            rawVideoUrl = rawVideoUrl.replace(/\\/g, '').replace(/&amp;/g, '&');
 
             const timestamp = Date.now();
             const fileName = `Pinterest_Video_${timestamp}`;
@@ -312,9 +346,10 @@ async function procesarPinterest(inputUrl, res) {
             });
         }
 
-        return res.status(400).json({ exito: false, mensaje: 'Este Pin no contiene un video válido.' });
+        return res.status(400).json({ exito: false, mensaje: 'Este Pin no contiene un video válido o es una imagen.' });
     } catch (err) {
-        return res.status(500).json({ exito: false, mensaje: 'Error interno en Pinterest.' });
+        console.error('Error procesando Pinterest:', err.message);
+        return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar Pinterest.' });
     }
 }
 
