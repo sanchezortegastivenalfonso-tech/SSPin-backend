@@ -282,58 +282,214 @@ async function procesarTikTok(inputUrl, res) {
 }
 
 // ==========================================
-// 3. LÓGICA PINTEREST (CORREGIDA)
+// 3. LÓGICA PINTEREST (REESCRITA)
 // ==========================================
+const PIN_HEADERS = {
+    'User-Agent': UA,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9,es;q=0.8'
+};
+
+function esperar(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Quita escapes de JSON/HTML para poder buscar URLs dentro de cualquier texto
+function limpiarUrlPin(texto) {
+    return String(texto)
+        .replace(/\\u002F/gi, '/')
+        .replace(/\\\//g, '/')
+        .replace(/\\u0026/gi, '&')
+        .replace(/&amp;/g, '&')
+        .replace(/\\/g, '');
+}
+
+// Busca enlaces de video (.mp4 y .m3u8) de Pinterest dentro de un texto
+function extraerVideosPin(texto) {
+    const normal = limpiarUrlPin(texto);
+    const encontrados = normal.match(/https?:\/\/[^\s"'<>\\)]+?\.(?:mp4|m3u8)(?:\?[^\s"'<>\\)]*)?/gi) || [];
+    return [...new Set(encontrados.filter(u => /pinimg\.com/i.test(u)))];
+}
+
+function resolucionUrl(u) {
+    const m = u.match(/(\d{3,4})(?:p|w)\b/i);
+    return m ? parseInt(m[1], 10) : 0;
+}
+
+// Elige el mp4 de mejor calidad (hasta 1080)
+function elegirMp4(urls) {
+    const mp4 = urls.filter(u => /\.mp4/i.test(u));
+    if (!mp4.length) return null;
+    mp4.sort((a, b) => Math.min(resolucionUrl(b), 1080) - Math.min(resolucionUrl(a), 1080));
+    return mp4[0];
+}
+
+// Muchos pines solo muestran el enlace HLS (.m3u8). Se prueban los mp4 equivalentes.
+function derivarMp4(m3u8) {
+    const base = m3u8.split('?')[0];
+    const m = base.match(/^(https?:\/\/[^/]+)\/videos\/(?:mmhls|hls)\/(.+?)(?:_\d+w)?\.m3u8$/i);
+    if (!m) return [];
+    return [
+        `${m[1]}/videos/720p/${m[2]}.mp4`,
+        `${m[1]}/videos/iht/expMp4/${m[2]}_720w.mp4`,
+        `${m[1]}/videos/iht/expMp4/${m[2]}.mp4`
+    ];
+}
+
+// Comprueba (sin descargar) que el enlace realmente sea un video
+async function existeVideo(url) {
+    try {
+        const r = await axios.get(url, {
+            headers: { 'User-Agent': UA, 'Range': 'bytes=0-1' },
+            timeout: 5000,
+            responseType: 'stream',
+            validateStatus: () => true
+        });
+        r.data.destroy();
+        const tipo = String(r.headers['content-type'] || '');
+        return (r.status === 200 || r.status === 206) && /video|octet-stream/i.test(tipo);
+    } catch (e) {
+        return false;
+    }
+}
+
+// Obtiene el ID del pin (también desde enlaces cortos pin.it)
+async function resolverPin(entrada) {
+    const regexId = /pin\/(?:[\w%-]*--)?(\d+)/i;
+    const directo = entrada.match(regexId);
+    if (directo) return { finalUrl: entrada, pinId: directo[1] };
+
+    if (!/pin\.it|pinterest\./i.test(entrada)) return { finalUrl: entrada, pinId: null };
+
+    for (let i = 0; i < 3; i++) {
+        try {
+            const r = await axios.get(entrada, {
+                headers: PIN_HEADERS,
+                maxRedirects: 6,
+                timeout: 8000,
+                validateStatus: () => true
+            });
+            const finalUrl = (r.request && r.request.res && r.request.res.responseUrl) || entrada;
+            const m = finalUrl.match(regexId) ||
+                      (typeof r.data === 'string' ? r.data.match(/pinterest\.[a-z.]+\/pin\/(?:[\w%-]*--)?(\d+)/i) : null);
+            if (m) return { finalUrl, pinId: m[1] };
+        } catch (e) {}
+        await esperar(700);
+    }
+    return { finalUrl: entrada, pinId: null };
+}
+
+// MOTOR 1: API interna de Pinterest (datos del pin en JSON)
+async function motorPinResource(pinId, info) {
+    try {
+        const data = JSON.stringify({
+            options: { id: pinId, field_set_key: 'unauth_react_main_pin', noCache: true, fetch_visual_search_objects: false },
+            context: {}
+        });
+        const r = await axios.get('https://www.pinterest.com/resource/PinResource/get/', {
+            params: { source_url: `/pin/${pinId}/`, data, _: Date.now() },
+            headers: {
+                'User-Agent': UA,
+                'Accept': 'application/json, text/javascript, */*; q=0.01',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'X-Requested-With': 'XMLHttpRequest',
+                'X-Pinterest-AppState': 'active',
+                'Referer': 'https://www.pinterest.com/'
+            },
+            timeout: 8000,
+            validateStatus: () => true
+        });
+        if ([401, 403, 429].includes(r.status)) info.bloqueado = true;
+        const pin = r.data && r.data.resource_response && r.data.resource_response.data;
+        if (pin && typeof pin === 'object') {
+            info.pinEncontrado = true;
+            return extraerVideosPin(JSON.stringify(pin));
+        }
+    } catch (e) {}
+    return [];
+}
+
+// MOTOR 2: widget público de Pinterest
+async function motorPidgets(pinId, info) {
+    try {
+        const r = await axios.get('https://widgets.pinterest.com/v3/pidgets/pins/info/', {
+            params: { pin_ids: pinId },
+            headers: { 'User-Agent': UA, 'Accept': 'application/json' },
+            timeout: 8000,
+            validateStatus: () => true
+        });
+        if ([401, 403, 429].includes(r.status)) info.bloqueado = true;
+        const lista = r.data && r.data.data;
+        if (Array.isArray(lista) && lista.length) {
+            info.pinEncontrado = true;
+            return extraerVideosPin(JSON.stringify(lista));
+        }
+    } catch (e) {}
+    return [];
+}
+
+// MOTOR 3: leer la página del pin (HTML)
+async function motorHtml(pinId, finalUrl, info) {
+    const paginas = [`https://www.pinterest.com/pin/${pinId}/`];
+    if (finalUrl && /^https?:\/\//i.test(finalUrl) && !paginas.includes(finalUrl)) paginas.push(finalUrl);
+
+    for (const pagina of paginas) {
+        try {
+            const r = await axios.get(pagina, {
+                headers: PIN_HEADERS,
+                maxRedirects: 5,
+                timeout: 9000,
+                validateStatus: () => true
+            });
+            if ([401, 403, 429].includes(r.status)) {
+                info.bloqueado = true;
+                continue;
+            }
+            const html = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || '');
+            if (/og:title|__PWS_DATA__|initial-state|pinimg/i.test(html)) info.pinEncontrado = true;
+            const urls = extraerVideosPin(html);
+            if (urls.length) return urls;
+        } catch (e) {}
+    }
+    return [];
+}
+
 async function procesarPinterest(inputUrl, res) {
     try {
-        let targetUrl = inputUrl.trim();
+        const entrada = inputUrl.trim();
+        const { finalUrl, pinId } = await resolverPin(entrada);
 
-        if (targetUrl.includes('pin.it')) {
-            targetUrl = await desglosarUrl(targetUrl);
+        if (!pinId) {
+            return res.status(400).json({
+                exito: false,
+                mensaje: 'No se pudo leer el enlace de Pinterest. Cópialo de nuevo con Compartir > Copiar enlace.'
+            });
         }
 
-        const response = await axios.get(targetUrl, {
-            headers: { 'User-Agent': UA }
-        });
+        const info = { bloqueado: false, pinEncontrado: false };
 
-        const html = response.data;
-        let rawVideoUrl = null;
+        // Los dos motores rápidos se consultan a la vez; el HTML solo si hace falta
+        const [a, b] = await Promise.all([motorPinResource(pinId, info), motorPidgets(pinId, info)]);
+        let urls = [...a, ...b];
+        if (!urls.length) urls = await motorHtml(pinId, finalUrl, info);
 
-        // Búsqueda en objeto JSON embebido de la página
-        const matchJson = html.match(/<script id="__PGI_APP_STATE__" type="application\/json">([\s\S]*?)<\/script>/i) ||
-                          html.match(/<script id="initial-state" type="application\/json">([\s\S]*?)<\/script>/i);
+        let rawVideoUrl = elegirMp4(urls);
 
-        if (matchJson && matchJson[1]) {
-            try {
-                const data = JSON.parse(matchJson[1]);
-                const resources = data.resources || data.v7 || {};
-                
-                // Recorremos el estado buscando URLs de video mp4
-                const jsonStr = JSON.stringify(resources);
-                const mp4Matches = jsonStr.match(/https?:\/\/[^"]+?\.mp4/gi);
-                if (mp4Matches && mp4Matches.length > 0) {
-                    // Tomamos el enlace mp4 de mayor resolución si hay varios
-                    rawVideoUrl = mp4Matches.find(url => url.includes('720p') || url.includes('exp')) || mp4Matches[0];
-                }
-            } catch (e) {}
-        }
-
-        // Búsqueda por Expresión Regular directa si no se halló en JSON
+        // Si solo hay HLS (.m3u8), se prueban los mp4 equivalentes
         if (!rawVideoUrl) {
-            const videoMatch = html.match(/"V_720P":\s*\{\s*"url":\s*"([^"]+)"/i) ||
-                               html.match(/"V_EXP720P":\s*\{\s*"url":\s*"([^"]+)"/i) ||
-                               html.match(/"url":\s*"(https:\/\/v1\.pinimg\.com\/videos\/[^\"]+\.mp4)"/i) ||
-                               html.match(/(https:\/\/v1\.pinimg\.com\/videos\/[^\s"]+\.mp4)/gi);
-
-            if (videoMatch) {
-                rawVideoUrl = videoMatch[1] || videoMatch[0];
+            const m3u8 = urls.filter(u => /\.m3u8/i.test(u));
+            for (const lista of m3u8) {
+                for (const candidato of derivarMp4(lista)) {
+                    if (await existeVideo(candidato)) {
+                        rawVideoUrl = candidato;
+                        break;
+                    }
+                }
+                if (rawVideoUrl) break;
             }
         }
 
         if (rawVideoUrl) {
-            // Limpiar secuencias de escape de formato JSON o URLs
-            rawVideoUrl = rawVideoUrl.replace(/\\/g, '').replace(/&amp;/g, '&');
-
             const timestamp = Date.now();
             const fileName = `Pinterest_Video_${timestamp}`;
             const proxyUrl = `/api/download-file?url=${encodeURIComponent(rawVideoUrl)}&name=${encodeURIComponent(fileName)}.mp4`;
@@ -346,7 +502,19 @@ async function procesarPinterest(inputUrl, res) {
             });
         }
 
-        return res.status(400).json({ exito: false, mensaje: 'Este Pin no contiene un video válido o es una imagen.' });
+        if (info.bloqueado) {
+            return res.status(429).json({
+                exito: false,
+                mensaje: 'Pinterest bloqueó la consulta por un momento. Espera un minuto e inténtalo de nuevo.'
+            });
+        }
+        if (info.pinEncontrado) {
+            return res.status(400).json({ exito: false, mensaje: 'Este Pin no contiene un video válido o es una imagen.' });
+        }
+        return res.status(400).json({
+            exito: false,
+            mensaje: 'No se pudo leer el Pin. Comprueba que sea público e inténtalo de nuevo.'
+        });
     } catch (err) {
         console.error('Error procesando Pinterest:', err.message);
         return res.status(500).json({ exito: false, mensaje: 'Error interno al procesar Pinterest.' });
