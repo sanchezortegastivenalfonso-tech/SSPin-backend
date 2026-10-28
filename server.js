@@ -446,7 +446,9 @@ async function motorHtml(pinId, finalUrl, info) {
                 continue;
             }
             const html = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || '');
-            if (/og:title|__PWS_DATA__|initial-state|pinimg/i.test(html)) info.pinEncontrado = true;
+            // Solo cuenta como "pin encontrado" si la página realmente menciona este pin
+            // (pinimg.com aparece en cualquier página de Pinterest, incluso en muros de login)
+            if (html.includes(`"id":"${pinId}"`) || html.includes(`/pin/${pinId}`)) info.pinEncontrado = true;
             const urls = extraerVideosPin(html);
             if (urls.length) return urls;
         } catch (e) {}
@@ -502,14 +504,19 @@ async function procesarPinterest(inputUrl, res) {
             });
         }
 
+        // Si algún motor pudo leer el Pin y no hay video, es una imagen: eso tiene prioridad
+        // sobre el aviso de bloqueo (otro motor pudo haber sido bloqueado sin que importe).
+        if (info.pinEncontrado) {
+            return res.status(400).json({
+                exito: false,
+                mensaje: 'Este Pin es una imagen o no contiene video. Solo se pueden descargar videos de Pinterest.'
+            });
+        }
         if (info.bloqueado) {
             return res.status(429).json({
                 exito: false,
                 mensaje: 'Pinterest bloqueó la consulta por un momento. Espera un minuto e inténtalo de nuevo.'
             });
-        }
-        if (info.pinEncontrado) {
-            return res.status(400).json({ exito: false, mensaje: 'Este Pin no contiene un video válido o es una imagen.' });
         }
         return res.status(400).json({
             exito: false,
